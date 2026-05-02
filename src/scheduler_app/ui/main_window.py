@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -33,7 +32,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor, QTextCharFormat, QPainter
 
 from scheduler_app.core.engine import SchedulerEngine
-from scheduler_app.core.models import Assignment, LEADER_ROLES, POSITION_LABELS
+from scheduler_app.core.models import Assignment, LEADER_ROLES, POSITION_LABELS, SPECIAL_SL_MAIN_ROLES
 from scheduler_app.data.repository import SchedulerRepository
 from scheduler_app.services.exporter import export_csv, export_excel
 
@@ -209,16 +208,19 @@ class MainWindow(QMainWindow):
         form = QHBoxLayout()
         self.in_name = QLineEdit()
         self.in_team = QComboBox(); self.in_team.addItems(["二", "三", "四"])
-        self.in_squad = QComboBox(); self.in_squad.addItems(["一中队", "二中队", "三中队", "四中队"])
+        self.in_squad = QComboBox(); self.in_squad.addItems(["直属", "一中队", "二中队", "三中队", "四中队"])
         self.in_group = QComboBox(); self.in_group.addItems(["空勤", "地勤"])
         self.in_role = QComboBox(); self.in_role.addItems(["大队长", "副大队长_空勤", "副大队长_地勤", "党总支书记", "中队长", "副中队长", "中队书记"])
         self.in_participate = QCheckBox("参与排班"); self.in_participate.setChecked(True)
         self.btn_add_person = QPushButton("添加人员")
         self.btn_add_person.clicked.connect(self.add_person)
+        self.btn_import_people = QPushButton("从Excel替换人员")
+        self.btn_import_people.clicked.connect(self.import_people_from_excel)
         for t, w in [("姓名", self.in_name), ("大队", self.in_team), ("中队", self.in_squad), ("类别", self.in_group), ("职责", self.in_role)]:
             form.addWidget(QLabel(t)); form.addWidget(w)
         form.addWidget(self.in_participate)
         form.addWidget(self.btn_add_person)
+        form.addWidget(self.btn_import_people)
         layout.addLayout(form)
 
         self.people_table = PeopleTableWidget(self.persist_people_order, 0, 9)
@@ -247,8 +249,11 @@ class MainWindow(QMainWindow):
         self.btn_remove_selected_leave.clicked.connect(self.remove_selected_leave)
         self.btn_clear_all_leave = QPushButton("删除该人员全部请假")
         self.btn_clear_all_leave.clicked.connect(self.clear_all_leave_for_person)
+        self.btn_clear_everyone_leave = QPushButton("删除所有人员所有请假")
+        self.btn_clear_everyone_leave.clicked.connect(self.clear_all_leave_for_everyone)
         top.addWidget(self.btn_remove_selected_leave)
         top.addWidget(self.btn_clear_all_leave)
+        top.addWidget(self.btn_clear_everyone_leave)
         top.addStretch(1)
         layout.addLayout(top)
 
@@ -256,8 +261,13 @@ class MainWindow(QMainWindow):
         self.calendar_leave.clicked.connect(self.toggle_leave_on_calendar)
         layout.addWidget(self.calendar_leave, 3)
 
-        self.leave_list = QListWidget()
-        layout.addWidget(self.leave_list, 2)
+        self.leave_table = QTableWidget(0, 2)
+        self.leave_table.setHorizontalHeaderLabels(["请假信息", "操作"])
+        self.leave_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.leave_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.leave_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.leave_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        layout.addWidget(self.leave_table, 2)
 
         self.leave_message_box = QPlainTextEdit()
         self.leave_message_box.setReadOnly(True)
@@ -349,7 +359,7 @@ class MainWindow(QMainWindow):
             self.people_table.setItem(i, 2, QTableWidgetItem(e.name))
 
             cb_team = QComboBox(); cb_team.addItems(["二", "三", "四"]); cb_team.setCurrentText(e.team)
-            cb_squad = QComboBox(); cb_squad.addItems(["一中队", "二中队", "三中队", "四中队"]); cb_squad.setCurrentText(e.squad)
+            cb_squad = QComboBox(); cb_squad.addItems(["直属", "一中队", "二中队", "三中队", "四中队"]); cb_squad.setCurrentText(e.squad)
             cb_group = QComboBox(); cb_group.addItems(["空勤", "地勤"]); cb_group.setCurrentText(e.duty_group)
             cb_role = QComboBox(); cb_role.addItems(["大队长", "副大队长_空勤", "副大队长_地勤", "党总支书记", "中队长", "副中队长", "中队书记"]); cb_role.setCurrentText(e.role)
             cb_team.currentTextChanged.connect(lambda _, eid=e.id, a=cb_team, b=cb_squad, c=cb_group, d=cb_role: self.update_person_meta(eid, a, b, c, d))
@@ -396,7 +406,7 @@ class MainWindow(QMainWindow):
         self.plan_leader_combo.blockSignals(True)
         self.plan_leader_combo.clear()
         self.plan_leader_combo.addItem("(空)", None)
-        for e in [x for x in self.employees if x.role in LEADER_ROLES]:
+        for e in [x for x in self.employees if x.role in SPECIAL_SL_MAIN_ROLES]:
             self.plan_leader_combo.addItem(f"{e.name}-{e.team}-{e.squad}-{e.role}", e.id)
         self.plan_leader_combo.blockSignals(False)
 
@@ -409,6 +419,24 @@ class MainWindow(QMainWindow):
         self.in_name.clear()
         self.refresh_people()
         self.load_day_plan_table()
+
+    def import_people_from_excel(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择人员Excel文件",
+            "",
+            "Excel (*.xlsx *.xlsm)",
+        )
+        if not file_path:
+            return
+        try:
+            count = self.repo.replace_employees_from_xlsx(Path(file_path))
+            self.refresh_people()
+            self.refresh_leave_list()
+            self.load_day_plan_table()
+            QMessageBox.information(self, "导入完成", f"已替换人员，共导入 {count} 条。")
+        except Exception as e:
+            QMessageBox.critical(self, "导入失败", str(e))
 
     def delete_person(self, eid: int):
         self.repo.delete_employee(eid)
@@ -424,26 +452,41 @@ class MainWindow(QMainWindow):
         self.refresh_leave_list()
         person_label = self.leave_person.currentText().split("-", 2)[1] if "-" in self.leave_person.currentText() else self.leave_person.currentText()
         action = "新增请假" if is_leave else "取消请假"
-        self.leave_message_box.appendPlainText(f"{action}: {person_label} - {d.isoformat()}")
+        self.leave_message_box.appendPlainText(f"{person_label}，{d.year}/{d.month}/{d.day}（{action}）")
 
     def refresh_leave_list(self):
-        self.leave_list.clear()
+        self.leave_table.setRowCount(0)
         eid = self.leave_person.currentData()
         if eid is None:
             return
-        for d in sorted(dd for pid, dd in self.repo.load_leaves() if pid == eid):
-            self.leave_list.addItem(d.isoformat())
+        person_label = self.leave_person.currentText().split("-", 2)[1] if "-" in self.leave_person.currentText() else self.leave_person.currentText()
+        dates = sorted(dd for pid, dd in self.repo.load_leaves() if pid == eid)
+        self.leave_table.setRowCount(len(dates))
+        for i, d in enumerate(dates):
+            item = QTableWidgetItem(f"{person_label}，{d.year}/{d.month}/{d.day}")
+            item.setData(Qt.UserRole, d.isoformat())
+            self.leave_table.setItem(i, 0, item)
+            btn = QPushButton("删除")
+            btn.clicked.connect(lambda _, dd=d, ee=eid: self.remove_leave_item(ee, dd))
+            self.leave_table.setCellWidget(i, 1, btn)
 
     def remove_selected_leave(self):
         eid = self.leave_person.currentData()
-        item = self.leave_list.currentItem()
-        if eid is None or item is None:
+        row = self.leave_table.currentRow()
+        if eid is None or row < 0:
             return
-        d = date.fromisoformat(item.text())
+        d_iso = self.leave_table.item(row, 0).data(Qt.UserRole)
+        d = date.fromisoformat(d_iso)
         self.repo.remove_leave(eid, d)
         self.refresh_leave_list()
         person_label = self.leave_person.currentText().split("-", 2)[1] if "-" in self.leave_person.currentText() else self.leave_person.currentText()
-        self.leave_message_box.appendPlainText(f"删除请假: {person_label} - {d.isoformat()}")
+        self.leave_message_box.appendPlainText(f"{person_label}，{d.year}/{d.month}/{d.day}（删除）")
+
+    def remove_leave_item(self, eid: int, d: date):
+        self.repo.remove_leave(eid, d)
+        self.refresh_leave_list()
+        person_label = self.leave_person.currentText().split("-", 2)[1] if "-" in self.leave_person.currentText() else self.leave_person.currentText()
+        self.leave_message_box.appendPlainText(f"{person_label}，{d.year}/{d.month}/{d.day}（删除）")
 
     def clear_all_leave_for_person(self):
         eid = self.leave_person.currentData()
@@ -453,6 +496,11 @@ class MainWindow(QMainWindow):
         self.repo.clear_leaves_for_employee(eid)
         self.refresh_leave_list()
         self.leave_message_box.appendPlainText(f"删除全部请假: {person_label}")
+
+    def clear_all_leave_for_everyone(self):
+        self.repo.clear_all_leaves()
+        self.refresh_leave_list()
+        self.leave_message_box.appendPlainText("已删除所有人员所有请假")
 
     def on_plan_calendar_clicked(self):
         self.current_plan_date = self.plan_calendar.selectedDate().toPython()
@@ -487,6 +535,8 @@ class MainWindow(QMainWindow):
         eid = self.plan_leader_combo.currentData()
         if eid is not None:
             self.repo.set_manual_assignment(d, "SL_MAIN", int(eid))
+        else:
+            self.repo.clear_manual_assignment(d, "SL_MAIN")
         self.load_day_plan_table()
         self._paint_plan_calendar()
 
@@ -528,6 +578,9 @@ class MainWindow(QMainWindow):
         self.plan_calendar.set_manual_name_map(manual_name_map)
 
     def generate_schedule(self):
+        # Always regenerate from current persisted state (do not reuse previous in-memory results).
+        self.current_assignments = []
+        self.log_box.clear()
         self.employees = self.repo.load_employees()
         result = SchedulerEngine().solve(
             self.employees,
@@ -582,7 +635,12 @@ class MainWindow(QMainWindow):
             return
         path, _ = QFileDialog.getSaveFileName(self, "导出Excel", "schedule.xlsx", "Excel (*.xlsx)")
         if path:
-            export_excel(Path(path), self.current_assignments, self.employees)
+            export_excel(
+                Path(path),
+                self.current_assignments,
+                self.employees,
+                self.repo.load_day_tags(),
+            )
 
 
 def run_app() -> None:

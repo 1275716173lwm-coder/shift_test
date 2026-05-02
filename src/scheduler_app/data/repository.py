@@ -3,6 +3,7 @@
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
+from openpyxl import load_workbook
 
 from scheduler_app.core.models import Assignment, Employee
 
@@ -135,6 +136,62 @@ class SchedulerRepository:
                 (name, team, squad, duty_group, role, 1 if participate else 0, next_order),
             )
 
+    def replace_employees_from_xlsx(self, xlsx_path: Path) -> int:
+        wb = load_workbook(xlsx_path, data_only=True)
+        ws = wb.active
+
+        headers = [str(ws.cell(1, c).value or "").strip() for c in range(1, ws.max_column + 1)]
+        idx = {h: i + 1 for i, h in enumerate(headers)}
+
+        # Required columns (Chinese)
+        required = ["姓名", "大队", "中队", "类别", "职责"]
+        missing = [c for c in required if c not in idx]
+        if missing:
+            raise ValueError(f"Excel缺少必要列: {', '.join(missing)}")
+
+        # Optional: 参与排班
+        participate_col = idx.get("参与排班")
+
+        rows_to_insert: list[tuple[str, str, str, str, str, int, int]] = []
+        order_index = 0
+        for r in range(2, ws.max_row + 1):
+            name = str(ws.cell(r, idx["姓名"]).value or "").strip()
+            team = str(ws.cell(r, idx["大队"]).value or "").strip()
+            squad = str(ws.cell(r, idx["中队"]).value or "").strip()
+            duty_group = str(ws.cell(r, idx["类别"]).value or "").strip()
+            role = str(ws.cell(r, idx["职责"]).value or "").strip()
+            if not name:
+                continue
+            if not team:
+                team = "二"
+            if not squad:
+                squad = "直属"
+            if not duty_group:
+                duty_group = "空勤"
+            if not role:
+                role = "中队长"
+
+            participate = 1
+            if participate_col:
+                raw = str(ws.cell(r, participate_col).value or "").strip()
+                if raw in {"0", "否", "false", "False", "不参与"}:
+                    participate = 0
+
+            rows_to_insert.append((name, team, squad, duty_group, role, participate, order_index))
+            order_index += 1
+
+        with self._connect() as conn:
+            conn.execute("DELETE FROM manual_assignments")
+            conn.execute("DELETE FROM leaves")
+            conn.execute("DELETE FROM employees")
+            conn.execute("DELETE FROM sqlite_sequence WHERE name='employees'")
+            for row in rows_to_insert:
+                conn.execute(
+                    "INSERT INTO employees(name,team,squad,duty_group,role,participate,order_index) VALUES(?,?,?,?,?,?,?)",
+                    row,
+                )
+        return len(rows_to_insert)
+
     def update_employee_meta(self, employee_id: int, team: str, squad: str, duty_group: str, role: str) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -175,6 +232,10 @@ class SchedulerRepository:
         with self._connect() as conn:
             conn.execute("DELETE FROM leaves WHERE employee_id=?", (employee_id,))
 
+    def clear_all_leaves(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM leaves")
+
     def set_day_tag(self, d: date, tag: str) -> None:
         with self._connect() as conn:
             conn.execute("INSERT OR REPLACE INTO day_tags(work_date,tag) VALUES(?,?)", (d.isoformat(), tag))
@@ -186,6 +247,13 @@ class SchedulerRepository:
     def set_manual_assignment(self, d: date, position: str, employee_id: int) -> None:
         with self._connect() as conn:
             conn.execute("INSERT OR REPLACE INTO manual_assignments(work_date,position,employee_id) VALUES(?,?,?)", (d.isoformat(), position, employee_id))
+
+    def clear_manual_assignment(self, d: date, position: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM manual_assignments WHERE work_date=? AND position=?",
+                (d.isoformat(), position),
+            )
 
     def load_manual_assignments(self, position: str) -> dict[date, int]:
         with self._connect() as conn:

@@ -3,7 +3,7 @@
 from collections import defaultdict
 from datetime import date, timedelta
 
-from scheduler_app.core.models import Assignment, Employee, LEADER_ROLES, POSITION_LABELS, POSITIONS_SPECIAL, POSITIONS_WORKDAY, ScheduleResult
+from scheduler_app.core.models import Assignment, Employee, LEADER_ROLES, POSITION_LABELS, POSITIONS_SPECIAL, POSITIONS_WORKDAY, ScheduleResult, SPECIAL_SL_MAIN_ROLES
 
 
 class SchedulerEngine:
@@ -69,7 +69,7 @@ class SchedulerEngine:
                     continue
                 eid = manual_special_sl_main[d]
                 e = em_by_id.get(eid)
-                if not e or e.role not in LEADER_ROLES or (eid, d) in leaves:
+                if not e or e.role not in SPECIAL_SL_MAIN_ROLES or (eid, d) in leaves:
                     logs.append(f"{d} 特殊日期人工指定的{POSITION_LABELS['SL_MAIN']}无效")
                     d += timedelta(days=1)
                     continue
