@@ -1,0 +1,5 @@
+﻿# Pin transitive deps for reproducible builds
+shiboken6==6.10.3
+PySide6_Essentials==6.10.3
+PySide6_Addons==6.10.3
+et_xmlfile==2.0.0

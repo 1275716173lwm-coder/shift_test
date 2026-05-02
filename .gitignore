@@ -1,0 +1,40 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual env
+.venv/
+venv/
+
+# Build outputs
+build/
+dist/
+*.spec
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local app/runtime data
+*.db
+*.sqlite
+*.sqlite3
+schedule*.csv
+schedule*.xlsx
+
+# Logs
+*.log
+
+# Coverage
+.coverage
+htmlcov/
+
+# Temporary files
+*.tmp
+*.bak
