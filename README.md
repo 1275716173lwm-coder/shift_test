@@ -28,3 +28,9 @@ python scripts\build_exe.py
 - 当前为 `PySide6` 桌面版（不是浏览器网页）。
 - 数据库路径：`%USERPROFILE%\AppData\Local\SchedulerApp\scheduler.db`
 - 如需改成网页形态（前后端分离）可在此规则引擎基础上迁移。
+
+
+cd "C:\Users\12757\OneDrive - cqu.edu.cn\飞行资料\CA\飞行部\排版工具\V1.7_codex"
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = (Join-Path (Get-Location) 'src')
+python -m scheduler_app

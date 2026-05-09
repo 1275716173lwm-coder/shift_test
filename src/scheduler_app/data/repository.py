@@ -3,6 +3,7 @@
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
+from contextlib import contextmanager
 from openpyxl import load_workbook
 
 from scheduler_app.core.models import Assignment, Employee
@@ -26,10 +27,15 @@ class SchedulerRepository:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -66,6 +72,45 @@ class SchedulerRepository:
                     note TEXT NOT NULL,
                     assignments_json TEXT NOT NULL,
                     logs_text TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS result_manual_overrides(
+                    work_date TEXT NOT NULL,
+                    position TEXT NOT NULL,
+                    employee_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(work_date, position)
+                );
+                CREATE TABLE IF NOT EXISTS saved_schedules(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    saved_at TEXT NOT NULL,
+                    month_key TEXT NOT NULL,
+                    work_date TEXT NOT NULL,
+                    position TEXT NOT NULL,
+                    employee_id INTEGER NOT NULL,
+                    manual INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS monthly_stats_history(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    saved_at TEXT NOT NULL,
+                    month_key TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    subject_id TEXT NOT NULL,
+                    subject_name TEXT NOT NULL,
+                    count_value INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS yearly_stats_ledger(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    saved_at TEXT NOT NULL,
+                    year_key TEXT NOT NULL,
+                    employee_id INTEGER NOT NULL,
+                    increment_value INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS history_import_cache(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    imported_at TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
                 );
                 """
             )
@@ -258,6 +303,113 @@ class SchedulerRepository:
     def load_manual_assignments(self, position: str) -> dict[date, int]:
         with self._connect() as conn:
             return {date.fromisoformat(r["work_date"]): r["employee_id"] for r in conn.execute("SELECT * FROM manual_assignments WHERE position=?", (position,)).fetchall()}
+
+    def save_result_override(self, d: date, position: str, employee_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO result_manual_overrides(work_date,position,employee_id,created_at) VALUES(?,?,?,?)",
+                (d.isoformat(), position, employee_id, datetime.now().isoformat(timespec="seconds")),
+            )
+
+    def clear_result_override(self, d: date, position: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM result_manual_overrides WHERE work_date=? AND position=?",
+                (d.isoformat(), position),
+            )
+
+    def clear_all_result_overrides(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM result_manual_overrides")
+
+    def load_result_overrides(self) -> dict[tuple[date, str], int]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT work_date, position, employee_id FROM result_manual_overrides").fetchall()
+            return {(date.fromisoformat(r["work_date"]), r["position"]): r["employee_id"] for r in rows}
+
+    def save_schedule_and_stats(self, assignments: list[Assignment], employees: list[Employee], month_key: str) -> None:
+        by_id = {e.id: e for e in employees}
+        saved_at = datetime.now().isoformat(timespec="seconds")
+        month_person = {}
+        month_team = {}
+        year_key = month_key[:4]
+        for a in assignments:
+            month_person[a.employee_id] = month_person.get(a.employee_id, 0) + 1
+            team = by_id[a.employee_id].team if a.employee_id in by_id else "-"
+            month_team[team] = month_team.get(team, 0) + 1
+        with self._connect() as conn:
+            for a in assignments:
+                conn.execute(
+                    "INSERT INTO saved_schedules(saved_at,month_key,work_date,position,employee_id,manual) VALUES(?,?,?,?,?,?)",
+                    (saved_at, month_key, a.work_date.isoformat(), a.position, a.employee_id, 1 if a.manual else 0),
+                )
+            for eid, cnt in month_person.items():
+                e = by_id.get(eid)
+                if not e:
+                    continue
+                conn.execute(
+                    "INSERT INTO monthly_stats_history(saved_at,month_key,scope,subject_id,subject_name,count_value) VALUES(?,?,?,?,?,?)",
+                    (saved_at, month_key, "person", str(eid), e.name, cnt),
+                )
+                conn.execute(
+                    "INSERT INTO yearly_stats_ledger(saved_at,year_key,employee_id,increment_value) VALUES(?,?,?,?)",
+                    (saved_at, year_key, eid, cnt),
+                )
+            for team, cnt in month_team.items():
+                conn.execute(
+                    "INSERT INTO monthly_stats_history(saved_at,month_key,scope,subject_id,subject_name,count_value) VALUES(?,?,?,?,?,?)",
+                    (saved_at, month_key, "team", team, team, cnt),
+                )
+
+    def yearly_totals(self, year_key: str) -> dict[int, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT employee_id, COALESCE(SUM(increment_value),0) AS c FROM yearly_stats_ledger WHERE year_key=? GROUP BY employee_id",
+                (year_key,),
+            ).fetchall()
+            return {int(r["employee_id"]): int(r["c"]) for r in rows}
+
+    def save_history_import_cache(self, source_type: str, source_ref: str, payload_json: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO history_import_cache(imported_at,source_type,source_ref,payload_json) VALUES(?,?,?,?)",
+                (datetime.now().isoformat(timespec="seconds"), source_type, source_ref, payload_json),
+            )
+
+    def latest_history_import_cache(self) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT imported_at,source_type,source_ref,payload_json FROM history_import_cache ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return dict(row) if row else None
+
+    def latest_saved_tail(self, month_key: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT work_date, position, employee_id
+                FROM saved_schedules
+                WHERE month_key=?
+                ORDER BY id DESC
+                """,
+                (month_key,),
+            ).fetchall()
+        if not rows:
+            return []
+        latest_by_day_pos = {}
+        for r in rows:
+            k = (r["work_date"], r["position"])
+            if k not in latest_by_day_pos:
+                latest_by_day_pos[k] = dict(r)
+        all_dates = sorted({k[0] for k in latest_by_day_pos})
+        tail = all_dates[-3:]
+        out = []
+        for d in tail:
+            for pos in ("SL_MAIN", "TF_MAIN", "FLEET_LEAD"):
+                row = latest_by_day_pos.get((d, pos))
+                if row:
+                    out.append(row)
+        return out
 
     def save_snapshot(self, snapshot_id: str, note: str, assignments: list[Assignment], logs: list[str]) -> None:
         import json

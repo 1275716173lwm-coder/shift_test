@@ -1,9 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, timedelta
 
-from scheduler_app.core.models import Assignment, Employee, LEADER_ROLES, POSITION_LABELS, POSITIONS_SPECIAL, POSITIONS_WORKDAY, ScheduleResult, SPECIAL_SL_MAIN_ROLES
+from scheduler_app.core.models import Assignment, Employee, LEADER_ROLES, POSITION_LABELS, ScheduleResult, SPECIAL_SL_MAIN_ROLES
 
 
 class SchedulerEngine:
@@ -15,10 +15,14 @@ class SchedulerEngine:
         leaves: set[tuple[int, date]],
         day_tags: dict[date, str],
         manual_special_sl_main: dict[date, int],
+        history_tail: list[dict] | None = None,
+        manual_overrides: dict[tuple[date, str], int] | None = None,
     ) -> ScheduleResult:
         logs: list[str] = []
         em_by_id = {e.id: e for e in employees}
         assignments: list[Assignment] = []
+        manual_overrides = manual_overrides or {}
+        history_tail = history_tail or []
 
         team_counts = defaultdict(lambda: defaultdict(int))
         person_days = defaultdict(list)
@@ -26,12 +30,28 @@ class SchedulerEngine:
         last_sl_main_team = None
         last_tf_main_team = None
 
+        for row in history_tail:
+            d = date.fromisoformat(str(row["work_date"]))
+            pos = str(row["position"])
+            eid = int(row["employee_id"])
+            e = em_by_id.get(eid)
+            if not e:
+                continue
+            person_days[eid].append(d)
+            team_counts[e.team][pos] += 1
+            if pos == "FLEET_LEAD":
+                fleet_counts[eid] += 1
+            if pos == "SL_MAIN":
+                last_sl_main_team = e.team
+            if pos == "TF_MAIN":
+                last_tf_main_team = e.team
+
         def is_special(d: date) -> bool:
             if d in day_tags:
                 return day_tags[d] == "SPECIAL"
             return d.weekday() >= 5
 
-        def available(e: Employee, d: date, auto=True) -> bool:
+        def is_available(e: Employee, d: date, block_leaders: bool = False) -> bool:
             if not e.participate:
                 return False
             if (e.id, d) in leaves:
@@ -39,14 +59,14 @@ class SchedulerEngine:
             for old in person_days[e.id]:
                 if abs((d - old).days) < 3:
                     return False
-            if auto and e.role in LEADER_ROLES:
+            if block_leaders and e.role in LEADER_ROLES:
                 return False
             return True
 
         def pick_person(cands: list[Employee], pos: str) -> Employee | None:
             if not cands:
                 return None
-            cands.sort(key=lambda e: (team_counts[e.team][pos], len(person_days[e.id]), e.id))
+            cands.sort(key=lambda x: (team_counts[x.team][pos], len(person_days[x.id]), x.id))
             return cands[0]
 
         def pick_team(cands: set[str], pos: str, last_team: str | None) -> str | None:
@@ -57,104 +77,140 @@ class SchedulerEngine:
                 return ranked[1]
             return ranked[0]
 
+        def put_assignment(day_asg: dict[str, Assignment], d: date, pos: str, eid: int, manual: bool = False) -> bool:
+            e = em_by_id.get(eid)
+            if not e:
+                logs.append(f"{d} {POSITION_LABELS.get(pos, pos)} 人员不存在")
+                return False
+            if (eid, d) in leaves:
+                logs.append(f"{d} {POSITION_LABELS.get(pos, pos)} 指定人员请假")
+                return False
+            if pos != "FLEET_LEAD":
+                for a in day_asg.values():
+                    if a.employee_id == eid:
+                        logs.append(f"{d} {e.name} 同日重复岗位")
+                        return False
+            if not manual and not is_available(e, d, block_leaders=(pos != "FLEET_LEAD")):
+                logs.append(f"{d} {POSITION_LABELS.get(pos, pos)} 无可用人员")
+                return False
+            day_asg[pos] = Assignment(d, pos, eid, manual=manual)
+            return True
+
         d = start
         while d <= end:
             special = is_special(d)
-            day_asg: list[Assignment] = []
+            day_asg: dict[str, Assignment] = {}
 
-            if special:
-                if d not in manual_special_sl_main:
-                    logs.append(f"{d} 特殊日期缺少人工指定的{POSITION_LABELS['SL_MAIN']}")
-                    d += timedelta(days=1)
-                    continue
+            # 1) plan page manual for special SL_MAIN
+            if special and d in manual_special_sl_main:
                 eid = manual_special_sl_main[d]
                 e = em_by_id.get(eid)
-                if not e or e.role not in SPECIAL_SL_MAIN_ROLES or (eid, d) in leaves:
+                if not e or e.role not in SPECIAL_SL_MAIN_ROLES:
                     logs.append(f"{d} 特殊日期人工指定的{POSITION_LABELS['SL_MAIN']}无效")
                     d += timedelta(days=1)
                     continue
-                day_asg.append(Assignment(d, "SL_MAIN", eid, manual=True))
-                sl_main_team = e.team
-            else:
-                teams = {e.team for e in employees if available(e, d, auto=True)}
+                if not put_assignment(day_asg, d, "SL_MAIN", eid, manual=True):
+                    d += timedelta(days=1)
+                    continue
+            elif special:
+                logs.append(f"{d} 特殊日期缺少人工指定的{POSITION_LABELS['SL_MAIN']}")
+                d += timedelta(days=1)
+                continue
+
+            # 2) result page manual overrides
+            required_positions = ["SL_MAIN", "TF_MAIN", "SL_AIR", "SL_GROUND", "FLEET_LEAD"]
+            if special:
+                required_positions.append("TF_GROUND")
+            for pos in required_positions:
+                eid = manual_overrides.get((d, pos))
+                if eid is None:
+                    continue
+                if pos == "SL_MAIN" and special and d in manual_special_sl_main and manual_special_sl_main[d] != eid:
+                    logs.append(f"{d} {POSITION_LABELS['SL_MAIN']}与值班计划人工指定冲突，保留值班计划")
+                    continue
+                if not put_assignment(day_asg, d, pos, int(eid), manual=True):
+                    day_asg = {}
+                    break
+            if not day_asg and any((d, p) in manual_overrides for p in required_positions):
+                d += timedelta(days=1)
+                continue
+
+            # 3) auto fill remaining positions
+            if "SL_MAIN" not in day_asg:
+                teams = {e.team for e in employees if is_available(e, d, block_leaders=True)}
                 sl_main_team = pick_team(teams, "SL_MAIN", last_sl_main_team)
                 if not sl_main_team:
                     logs.append(f"{d} 无可用大队安排{POSITION_LABELS['SL_MAIN']}")
                     d += timedelta(days=1)
                     continue
-                cands = [e for e in employees if e.team == sl_main_team and e.duty_group == "空勤" and available(e, d, auto=True)]
+                cands = [e for e in employees if e.team == sl_main_team and e.duty_group == "空勤" and is_available(e, d, block_leaders=True)]
                 chosen = pick_person(cands, "SL_MAIN")
-                if not chosen:
+                if not chosen or not put_assignment(day_asg, d, "SL_MAIN", chosen.id):
                     logs.append(f"{d} 大队{sl_main_team}无可用人员安排{POSITION_LABELS['SL_MAIN']}")
                     d += timedelta(days=1)
                     continue
-                day_asg.append(Assignment(d, "SL_MAIN", chosen.id))
+            sl_main_team = em_by_id[day_asg["SL_MAIN"].employee_id].team
 
-            teams_tf = {e.team for e in employees if available(e, d, auto=True)} - {sl_main_team}
-            tf_team = pick_team(teams_tf, "TF_MAIN", last_tf_main_team)
-            if not tf_team:
-                logs.append(f"{d} 无可用大队安排{POSITION_LABELS['TF_MAIN']}")
-                d += timedelta(days=1)
-                continue
-            cands_tf = [e for e in employees if e.team == tf_team and e.duty_group == "空勤" and available(e, d, auto=True)]
-            chosen_tf = pick_person(cands_tf, "TF_MAIN")
-            if not chosen_tf:
-                logs.append(f"{d} 大队{tf_team}无可用人员安排{POSITION_LABELS['TF_MAIN']}")
-                d += timedelta(days=1)
-                continue
-            day_asg.append(Assignment(d, "TF_MAIN", chosen_tf.id))
+            if "TF_MAIN" not in day_asg:
+                teams_tf = {e.team for e in employees if is_available(e, d, block_leaders=True)} - {sl_main_team}
+                tf_team = pick_team(teams_tf, "TF_MAIN", last_tf_main_team)
+                if not tf_team:
+                    logs.append(f"{d} 无可用大队安排{POSITION_LABELS['TF_MAIN']}")
+                    d += timedelta(days=1)
+                    continue
+                cands_tf = [e for e in employees if e.team == tf_team and e.duty_group == "空勤" and is_available(e, d, block_leaders=True)]
+                chosen_tf = pick_person(cands_tf, "TF_MAIN")
+                if not chosen_tf or not put_assignment(day_asg, d, "TF_MAIN", chosen_tf.id):
+                    logs.append(f"{d} 大队{tf_team}无可用人员安排{POSITION_LABELS['TF_MAIN']}")
+                    d += timedelta(days=1)
+                    continue
+            tf_team = em_by_id[day_asg["TF_MAIN"].employee_id].team
 
-            used_teams = {sl_main_team, tf_team}
-            teams_air = {e.team for e in employees if available(e, d, auto=True)} - used_teams
-            sl_air_team = pick_team(teams_air, "SL_AIR", None)
-            if not sl_air_team:
-                logs.append(f"{d} 无可用大队安排{POSITION_LABELS['SL_AIR']}")
-                d += timedelta(days=1)
-                continue
-            cands_air = [e for e in employees if e.team == sl_air_team and e.duty_group == "空勤" and available(e, d, auto=True)]
-            chosen_air = pick_person(cands_air, "SL_AIR")
-            if not chosen_air:
-                logs.append(f"{d} 大队{sl_air_team}无可用人员安排{POSITION_LABELS['SL_AIR']}")
-                d += timedelta(days=1)
-                continue
-            day_asg.append(Assignment(d, "SL_AIR", chosen_air.id))
+            if "SL_AIR" not in day_asg:
+                used_teams = {sl_main_team, tf_team}
+                teams_air = {e.team for e in employees if is_available(e, d, block_leaders=True)} - used_teams
+                sl_air_team = pick_team(teams_air, "SL_AIR", None)
+                if not sl_air_team:
+                    logs.append(f"{d} 无可用大队安排{POSITION_LABELS['SL_AIR']}")
+                    d += timedelta(days=1)
+                    continue
+                cands_air = [e for e in employees if e.team == sl_air_team and e.duty_group == "空勤" and is_available(e, d, block_leaders=True)]
+                chosen_air = pick_person(cands_air, "SL_AIR")
+                if not chosen_air or not put_assignment(day_asg, d, "SL_AIR", chosen_air.id):
+                    logs.append(f"{d} 大队{sl_air_team}无可用人员安排{POSITION_LABELS['SL_AIR']}")
+                    d += timedelta(days=1)
+                    continue
 
-            cands_slg = [e for e in employees if e.team == tf_team and e.duty_group == "地勤" and available(e, d, auto=True)]
-            chosen_slg = pick_person(cands_slg, "SL_GROUND")
-            if not chosen_slg:
-                logs.append(f"{d} 大队{tf_team}无可用人员安排{POSITION_LABELS['SL_GROUND']}")
-                d += timedelta(days=1)
-                continue
-            day_asg.append(Assignment(d, "SL_GROUND", chosen_slg.id))
+            if "SL_GROUND" not in day_asg:
+                cands_slg = [e for e in employees if e.team == tf_team and e.duty_group == "地勤" and is_available(e, d)]
+                chosen_slg = pick_person(cands_slg, "SL_GROUND")
+                if not chosen_slg or not put_assignment(day_asg, d, "SL_GROUND", chosen_slg.id):
+                    logs.append(f"{d} 大队{tf_team}无可用人员安排{POSITION_LABELS['SL_GROUND']}")
+                    d += timedelta(days=1)
+                    continue
 
-            if special:
-                cands_tfg = [e for e in employees if e.team == sl_main_team and e.duty_group == "地勤" and available(e, d, auto=True)]
+            if special and "TF_GROUND" not in day_asg:
+                cands_tfg = [e for e in employees if e.team == sl_main_team and e.duty_group == "地勤" and is_available(e, d)]
                 chosen_tfg = pick_person(cands_tfg, "TF_GROUND")
-                if not chosen_tfg:
+                if not chosen_tfg or not put_assignment(day_asg, d, "TF_GROUND", chosen_tfg.id):
                     logs.append(f"{d} 大队{sl_main_team}无可用人员安排{POSITION_LABELS['TF_GROUND']}")
                     d += timedelta(days=1)
                     continue
-                day_asg.append(Assignment(d, "TF_GROUND", chosen_tfg.id))
 
-            sl_main_emp = em_by_id[next(a.employee_id for a in day_asg if a.position == "SL_MAIN")]
-            if sl_main_emp.role in LEADER_ROLES:
-                fleet_emp = sl_main_emp
-            else:
-                leaders = [
-                    e for e in employees
-                    if e.team == sl_main_emp.team and e.role in LEADER_ROLES and (e.id, d) not in leaves
-                ]
-                leaders.sort(key=lambda e: (fleet_counts[e.id], e.id))
-                fleet_emp = leaders[0] if leaders else None
-            if not fleet_emp:
-                logs.append(f"{d} 无可用人员安排{POSITION_LABELS['FLEET_LEAD']}")
-                d += timedelta(days=1)
-                continue
-            if person_days[fleet_emp.id] and (d - person_days[fleet_emp.id][-1]).days < 2:
-                logs.append(f"{d} {POSITION_LABELS['FLEET_LEAD']}连续值班提醒: {fleet_emp.name}")
-            day_asg.append(Assignment(d, "FLEET_LEAD", fleet_emp.id))
+            if "FLEET_LEAD" not in day_asg:
+                sl_main_emp = em_by_id[day_asg["SL_MAIN"].employee_id]
+                if sl_main_emp.role in LEADER_ROLES and is_available(sl_main_emp, d):
+                    fleet_emp = sl_main_emp
+                else:
+                    leaders = [e for e in employees if e.team == sl_main_emp.team and e.role in LEADER_ROLES and (e.id, d) not in leaves]
+                    leaders.sort(key=lambda x: (fleet_counts[x.id], x.id))
+                    fleet_emp = leaders[0] if leaders else None
+                if not fleet_emp or not put_assignment(day_asg, d, "FLEET_LEAD", fleet_emp.id):
+                    logs.append(f"{d} 无可用人员安排{POSITION_LABELS['FLEET_LEAD']}")
+                    d += timedelta(days=1)
+                    continue
 
-            for a in day_asg:
+            for a in day_asg.values():
                 assignments.append(a)
                 person_days[a.employee_id].append(d)
                 team_counts[em_by_id[a.employee_id].team][a.position] += 1
@@ -164,4 +220,5 @@ class SchedulerEngine:
             last_tf_main_team = tf_team
             d += timedelta(days=1)
 
+        assignments.sort(key=lambda x: (x.work_date, x.position))
         return ScheduleResult(assignments=assignments, logs=logs)
