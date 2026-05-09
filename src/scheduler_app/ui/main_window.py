@@ -106,6 +106,7 @@ class MainWindow(QMainWindow):
         self.employees = self.repo.load_employees()
         self.current_plan_date: date | None = None
         self.history_tail: list[dict] = []
+        self.rerun_seed: int = 0
 
         self._build_ui()
         self.refresh_people()
@@ -274,6 +275,8 @@ class MainWindow(QMainWindow):
 
     def _build_result_tab(self):
         layout = QVBoxLayout(self.tab_result)
+        self.result_status_label = QLabel("结果状态：未生成")
+        layout.addWidget(self.result_status_label)
         ops = QHBoxLayout()
         self.btn_rerun_with_mod = QPushButton("根据修改重新排班")
         self.btn_rerun_with_mod.clicked.connect(self.regenerate_with_overrides)
@@ -591,7 +594,7 @@ class MainWindow(QMainWindow):
         self.repo.save_history_import_cache("db", self._previous_month_key(), json.dumps(self.history_tail, ensure_ascii=False))
         QMessageBox.information(self, "成功", f"已从数据库引用历史尾部记录 {len(self.history_tail)} 条")
 
-    def _run_schedule(self, use_result_overrides: bool):
+    def _run_schedule(self, use_result_overrides: bool, seed: int):
         self.current_assignments = []
         self.current_logs = []
         self.log_box.clear()
@@ -606,22 +609,33 @@ class MainWindow(QMainWindow):
             self.repo.load_manual_assignments("SL_MAIN"),
             history_tail=self.history_tail,
             manual_overrides=overrides,
+            rerun_seed=seed,
         )
         self.current_assignments = result.assignments
         self.current_logs = result.logs
         self.log_box.setPlainText("\n".join(result.logs) if result.logs else "排班完成")
         self.render_result_table()
         self.render_summary()
+        self.result_status_label.setText(
+            f"结果状态：已刷新（共 {len(self.current_assignments)} 条岗位安排，日志 {len(self.current_logs)} 条）"
+        )
+        # 每次重排后切换到“排班结果”页，确保用户立即看到最新结果。
+        self.tabs.setCurrentWidget(self.tab_result)
+        self.result_table.viewport().update()
+        self.summary_table.viewport().update()
 
     def generate_schedule(self):
-        self._run_schedule(use_result_overrides=True)
+        self.rerun_seed = 0
+        self._run_schedule(use_result_overrides=True, seed=self.rerun_seed)
 
     def regenerate_with_overrides(self):
-        self._run_schedule(use_result_overrides=True)
+        self.rerun_seed += 1
+        self._run_schedule(use_result_overrides=True, seed=self.rerun_seed)
 
     def regenerate_plan_only(self):
         self.repo.clear_all_result_overrides()
-        self._run_schedule(use_result_overrides=False)
+        self.rerun_seed += 1
+        self._run_schedule(use_result_overrides=False, seed=self.rerun_seed)
 
     def _position_options(self, pos: str, d: date) -> list[tuple[str, int]]:
         leaves = self.repo.load_leaves()
