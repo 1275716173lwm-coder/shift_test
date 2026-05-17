@@ -19,12 +19,16 @@ class SchedulerEngine:
         history_tail: list[dict] | None = None,
         manual_overrides: dict[tuple[date, str], int] | None = None,
         rerun_seed: int = 0,
+        person_year_baseline: dict[int, int] | None = None,
+        team_year_baseline: dict[str, int] | None = None,
     ) -> ScheduleResult:
         logs: list[str] = []
         em_by_id = {e.id: e for e in employees}
         assignments: list[Assignment] = []
         manual_overrides = manual_overrides or {}
         history_tail = history_tail or []
+        person_year_baseline = person_year_baseline or {}
+        team_year_baseline = team_year_baseline or {}
 
         team_counts = defaultdict(lambda: defaultdict(int))
         person_days = defaultdict(list)
@@ -68,14 +72,29 @@ class SchedulerEngine:
         def pick_person(cands: list[Employee], pos: str, d: date) -> Employee | None:
             if not cands:
                 return None
-            cands.sort(key=lambda x: (team_counts[x.team][pos], len(person_days[x.id]), x.id))
+            cands.sort(
+                key=lambda x: (
+                    team_counts[x.team][pos],
+                    person_year_baseline.get(x.id, 0),
+                    len(person_days[x.id]),
+                    x.id,
+                )
+            )
             rng = random.Random(f"{rerun_seed}:{d.isoformat()}:{pos}")
             i = 0
             while i < len(cands):
                 j = i + 1
-                key0 = (team_counts[cands[i].team][pos], len(person_days[cands[i].id]))
+                key0 = (
+                    team_counts[cands[i].team][pos],
+                    person_year_baseline.get(cands[i].id, 0),
+                    len(person_days[cands[i].id]),
+                )
                 while j < len(cands):
-                    keyj = (team_counts[cands[j].team][pos], len(person_days[cands[j].id]))
+                    keyj = (
+                        team_counts[cands[j].team][pos],
+                        person_year_baseline.get(cands[j].id, 0),
+                        len(person_days[cands[j].id]),
+                    )
                     if keyj != key0:
                         break
                     j += 1
@@ -89,10 +108,26 @@ class SchedulerEngine:
         def pick_team(cands: set[str], pos: str, last_team: str | None, d: date) -> str | None:
             if not cands:
                 return None
-            ranked = sorted(cands, key=lambda t: (team_counts[t][pos], t == last_team, t))
+            ranked = sorted(
+                cands,
+                key=lambda t: (
+                    team_counts[t][pos],
+                    team_year_baseline.get(t, 0),
+                    t == last_team,
+                    t,
+                ),
+            )
             if len(ranked) > 1:
-                best = (team_counts[ranked[0]][pos], ranked[0] == last_team)
-                tie = [t for t in ranked if (team_counts[t][pos], t == last_team) == best]
+                best = (
+                    team_counts[ranked[0]][pos],
+                    team_year_baseline.get(ranked[0], 0),
+                    ranked[0] == last_team,
+                )
+                tie = [
+                    t
+                    for t in ranked
+                    if (team_counts[t][pos], team_year_baseline.get(t, 0), t == last_team) == best
+                ]
                 if len(tie) > 1:
                     rng = random.Random(f"{rerun_seed}:{d.isoformat()}:{pos}:team")
                     rng.shuffle(tie)

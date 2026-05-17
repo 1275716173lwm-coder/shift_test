@@ -11,8 +11,21 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from scheduler_app.core.models import Assignment, Employee, POSITION_LABELS
 
 
-def export_csv(path: Path, assignments: list[Assignment], employees: list[Employee]) -> None:
+def export_csv(
+    path: Path,
+    assignments: list[Assignment],
+    employees: list[Employee],
+    person_year_totals: dict[int, int] | None = None,
+    team_year_totals: dict[str, int] | None = None,
+) -> None:
     by_id = {e.id: e for e in employees}
+    person_year_totals = person_year_totals or {}
+    team_year_totals = team_year_totals or {}
+    person_month_totals = defaultdict(int)
+    team_month_totals = defaultdict(int)
+    for a in assignments:
+        person_month_totals[a.employee_id] += 1
+        team_month_totals[by_id[a.employee_id].team] += 1
     with path.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["日期", "岗位", "姓名", "大队", "中队", "类别", "职责", "人工"])
@@ -28,11 +41,31 @@ def export_csv(path: Path, assignments: list[Assignment], employees: list[Employ
                 e.role,
                 int(a.manual),
             ])
+        w.writerow([])
+        w.writerow(["人员统计"])
+        w.writerow(["姓名", "大队", "中队", "月度值班总数", "年度值班总数"])
+        for e in employees:
+            w.writerow([e.name, e.team, e.squad, person_month_totals[e.id], person_year_totals.get(e.id, 0)])
+        w.writerow([])
+        w.writerow(["大队统计"])
+        w.writerow(["大队", "月度值班总数", "年度值班总数"])
+        all_teams = sorted({e.team for e in employees})
+        for team in all_teams:
+            w.writerow([team, team_month_totals.get(team, 0), team_year_totals.get(team, 0)])
 
 
-def export_excel(path: Path, assignments: list[Assignment], employees: list[Employee], day_tags: dict | None = None) -> None:
+def export_excel(
+    path: Path,
+    assignments: list[Assignment],
+    employees: list[Employee],
+    day_tags: dict | None = None,
+    person_year_totals: dict[int, int] | None = None,
+    team_year_totals: dict[str, int] | None = None,
+) -> None:
     by_id = {e.id: e for e in employees}
     day_tags = day_tags or {}
+    person_year_totals = person_year_totals or {}
+    team_year_totals = team_year_totals or {}
     wb = Workbook()
 
     head_fill = PatternFill("solid", fgColor="1F4E78")
@@ -111,21 +144,21 @@ def export_excel(path: Path, assignments: list[Assignment], employees: list[Empl
                 cell.font = head_font
 
     person_month = wb.create_sheet("人员月度统计")
-    person_month.merge_cells("A1:D1")
+    person_month.merge_cells("A1:E1")
     person_month["A1"] = "人员月度统计"
     person_month["A1"].font = title_font
     person_month["A1"].alignment = center
     person_month.append([])
-    person_month.append(["姓名", "大队", "中队", "月度值班总数"])
+    person_month.append(["姓名", "大队", "中队", "月度值班总数", "年度值班总数"])
     p_counter = defaultdict(int)
     for a in assignments:
         p_counter[a.employee_id] += 1
     for e in employees:
-        person_month.append([e.name, e.team, e.squad, p_counter[e.id]])
+        person_month.append([e.name, e.team, e.squad, p_counter[e.id], person_year_totals.get(e.id, 0)])
 
-    for c, w in zip("ABCD", [14, 10, 12, 14]):
+    for c, w in zip("ABCDE", [14, 10, 12, 14, 14]):
         person_month.column_dimensions[c].width = w
-    for row in person_month.iter_rows(min_row=3, max_row=person_month.max_row, min_col=1, max_col=4):
+    for row in person_month.iter_rows(min_row=3, max_row=person_month.max_row, min_col=1, max_col=5):
         for cell in row:
             cell.border = border
             cell.alignment = center
@@ -134,21 +167,59 @@ def export_excel(path: Path, assignments: list[Assignment], employees: list[Empl
                 cell.font = head_font
 
     team_month = wb.create_sheet("大队月度统计")
-    team_month.merge_cells("A1:B1")
+    team_month.merge_cells("A1:C1")
     team_month["A1"] = "大队月度统计"
     team_month["A1"].font = title_font
     team_month["A1"].alignment = center
     team_month.append([])
-    team_month.append(["大队", "月度值班总数"])
+    team_month.append(["大队", "月度值班总数", "年度值班总数"])
     t_counter = defaultdict(int)
     for a in assignments:
         t_counter[by_id[a.employee_id].team] += 1
-    for team in sorted(t_counter):
-        team_month.append([team, t_counter[team]])
+    for team in sorted({e.team for e in employees}):
+        team_month.append([team, t_counter.get(team, 0), team_year_totals.get(team, 0)])
 
-    for c, w in zip("AB", [12, 16]):
+    for c, w in zip("ABC", [12, 16, 16]):
         team_month.column_dimensions[c].width = w
-    for row in team_month.iter_rows(min_row=3, max_row=team_month.max_row, min_col=1, max_col=2):
+    for row in team_month.iter_rows(min_row=3, max_row=team_month.max_row, min_col=1, max_col=3):
+        for cell in row:
+            cell.border = border
+            cell.alignment = center
+            if cell.row == 3:
+                cell.fill = head_fill
+                cell.font = head_font
+
+    person_year = wb.create_sheet("人员年度统计")
+    person_year.merge_cells("A1:D1")
+    person_year["A1"] = "人员年度统计"
+    person_year["A1"].font = title_font
+    person_year["A1"].alignment = center
+    person_year.append([])
+    person_year.append(["姓名", "大队", "中队", "年度值班总数"])
+    for e in employees:
+        person_year.append([e.name, e.team, e.squad, person_year_totals.get(e.id, 0)])
+    for c, w in zip("ABCD", [14, 10, 12, 16]):
+        person_year.column_dimensions[c].width = w
+    for row in person_year.iter_rows(min_row=3, max_row=person_year.max_row, min_col=1, max_col=4):
+        for cell in row:
+            cell.border = border
+            cell.alignment = center
+            if cell.row == 3:
+                cell.fill = head_fill
+                cell.font = head_font
+
+    team_year = wb.create_sheet("大队年度统计")
+    team_year.merge_cells("A1:B1")
+    team_year["A1"] = "大队年度统计"
+    team_year["A1"].font = title_font
+    team_year["A1"].alignment = center
+    team_year.append([])
+    team_year.append(["大队", "年度值班总数"])
+    for team in sorted({e.team for e in employees}):
+        team_year.append([team, team_year_totals.get(team, 0)])
+    for c, w in zip("AB", [12, 16]):
+        team_year.column_dimensions[c].width = w
+    for row in team_year.iter_rows(min_row=3, max_row=team_year.max_row, min_col=1, max_col=2):
         for cell in row:
             cell.border = border
             cell.alignment = center

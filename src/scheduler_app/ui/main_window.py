@@ -106,6 +106,8 @@ class MainWindow(QMainWindow):
         self.employees = self.repo.load_employees()
         self.current_plan_date: date | None = None
         self.history_tail: list[dict] = []
+        self.history_person_year_totals: dict[int, int] = {}
+        self.history_team_year_totals: dict[str, int] = {}
         self.rerun_seed: int = 0
 
         self._build_ui()
@@ -569,12 +571,37 @@ class MainWindow(QMainWindow):
                 out.append({"work_date": d_val.isoformat(), "position": "FLEET_LEAD", "employee_id": name_to_id[fleet_name]})
         return out
 
+    def _collect_year_stats_from_xlsx(self, path: Path) -> tuple[dict[int, int], dict[str, int]]:
+        wb = load_workbook(path, data_only=True)
+        person_year_totals: dict[int, int] = {}
+        team_year_totals: dict[str, int] = {}
+        employees_by_name = {e.name: e for e in self.employees}
+
+        if "人员年度统计" in wb.sheetnames:
+            ws = wb["人员年度统计"]
+            for r in range(4, ws.max_row + 1):
+                name = str(ws.cell(r, 1).value or "").strip()
+                total = ws.cell(r, 4).value
+                if name in employees_by_name and total not in (None, ""):
+                    person_year_totals[employees_by_name[name].id] = int(total)
+
+        if "大队年度统计" in wb.sheetnames:
+            ws = wb["大队年度统计"]
+            for r in range(4, ws.max_row + 1):
+                team = str(ws.cell(r, 1).value or "").strip()
+                total = ws.cell(r, 2).value
+                if team and total not in (None, ""):
+                    team_year_totals[team] = int(total)
+
+        return person_year_totals, team_year_totals
+
     def import_history_from_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "导入历史排班", "", "Excel (*.xlsx *.xlsm)")
         if not file_path:
             return
         try:
             self.history_tail = self._collect_history_tail_from_xlsx(Path(file_path))
+            self.history_person_year_totals, self.history_team_year_totals = self._collect_year_stats_from_xlsx(Path(file_path))
             self.repo.save_history_import_cache("file", file_path, json.dumps(self.history_tail, ensure_ascii=False))
             QMessageBox.information(self, "成功", f"已导入历史尾部记录 {len(self.history_tail)} 条")
         except Exception as e:
@@ -591,6 +618,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "数据库中没有可引用的上月排班记录")
             return
         self.history_tail = tail
+        year_key = self.start_date.date().toPython().strftime("%Y")
+        self.history_person_year_totals = self.repo.yearly_totals(year_key)
+        team_totals = defaultdict(int)
+        by_id = {e.id: e for e in self.employees}
+        for eid, total in self.history_person_year_totals.items():
+            e = by_id.get(eid)
+            if e is not None:
+                team_totals[e.team] += total
+        self.history_team_year_totals = dict(team_totals)
         self.repo.save_history_import_cache("db", self._previous_month_key(), json.dumps(self.history_tail, ensure_ascii=False))
         QMessageBox.information(self, "成功", f"已从数据库引用历史尾部记录 {len(self.history_tail)} 条")
 
@@ -610,6 +646,8 @@ class MainWindow(QMainWindow):
             history_tail=self.history_tail,
             manual_overrides=overrides,
             rerun_seed=seed,
+            person_year_baseline=self.history_person_year_totals,
+            team_year_baseline=self.history_team_year_totals,
         )
         self.current_assignments = result.assignments
         self.current_logs = result.logs
@@ -711,19 +749,50 @@ class MainWindow(QMainWindow):
             self.summary_table.setItem(i, 3, QTableWidgetItem(str(month_cnt.get(e.id, 0))))
             self.summary_table.setItem(i, 4, QTableWidgetItem(str(year_cnt.get(e.id, 0))))
 
+    def _export_year_totals(self) -> tuple[dict[int, int], dict[str, int]]:
+        month_cnt = defaultdict(int)
+        for a in self.current_assignments:
+            month_cnt[a.employee_id] += 1
+        year_key = self.start_date.date().toPython().strftime("%Y")
+        person_year_totals = self.repo.yearly_totals(year_key)
+        for eid, cnt in month_cnt.items():
+            person_year_totals[eid] = person_year_totals.get(eid, 0) + cnt
+        team_year_totals = defaultdict(int)
+        by_id = {e.id: e for e in self.employees}
+        for eid, cnt in person_year_totals.items():
+            e = by_id.get(eid)
+            if e is not None:
+                team_year_totals[e.team] += cnt
+        return person_year_totals, dict(team_year_totals)
+
     def on_export_csv(self):
         if not self.current_assignments:
             return
         path, _ = QFileDialog.getSaveFileName(self, "导出CSV", "schedule.csv", "CSV (*.csv)")
         if path:
-            export_csv(Path(path), self.current_assignments, self.employees)
+            person_year_totals, team_year_totals = self._export_year_totals()
+            export_csv(
+                Path(path),
+                self.current_assignments,
+                self.employees,
+                person_year_totals=person_year_totals,
+                team_year_totals=team_year_totals,
+            )
 
     def on_export_xlsx(self):
         if not self.current_assignments:
             return
         path, _ = QFileDialog.getSaveFileName(self, "导出Excel", "schedule.xlsx", "Excel (*.xlsx)")
         if path:
-            export_excel(Path(path), self.current_assignments, self.employees, self.repo.load_day_tags())
+            person_year_totals, team_year_totals = self._export_year_totals()
+            export_excel(
+                Path(path),
+                self.current_assignments,
+                self.employees,
+                self.repo.load_day_tags(),
+                person_year_totals=person_year_totals,
+                team_year_totals=team_year_totals,
+            )
 
 
 def run_app() -> None:
