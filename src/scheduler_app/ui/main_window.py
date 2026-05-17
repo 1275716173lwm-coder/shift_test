@@ -548,15 +548,40 @@ class MainWindow(QMainWindow):
 
     def _collect_history_tail_from_xlsx(self, path: Path) -> list[dict]:
         wb = load_workbook(path, data_only=True)
-        ws = wb["排班表"] if "排班表" in wb.sheetnames else wb.active
-        header = [str(ws.cell(1, c).value or "").strip() for c in range(1, ws.max_column + 1)]
-        idx = {h: i + 1 for i, h in enumerate(header)}
+        if "排班结果" in wb.sheetnames:
+            ws = wb["排班结果"]
+        elif "排班表" in wb.sheetnames:
+            ws = wb["排班表"]
+        else:
+            ws = wb.active
+
+        header_row = None
+        idx: dict[str, int] = {}
         required = ["日期", "双流主班", "天府主班", "机队总负责"]
-        if any(h not in idx for h in required):
-            raise ValueError("历史排班Excel缺少必要列")
+        normalized_aliases = {
+            "双流副班(空勤)": "双流副班（空勤）",
+            "双流副班(地勤)": "双流副班（地勤）",
+        }
+        for r in range(1, min(ws.max_row, 10) + 1):
+            header = []
+            for c in range(1, ws.max_column + 1):
+                val = str(ws.cell(r, c).value or "").strip()
+                val = normalized_aliases.get(val, val)
+                header.append(val)
+            maybe_idx = {h: i + 1 for i, h in enumerate(header)}
+            if all(h in maybe_idx for h in required):
+                header_row = r
+                idx = maybe_idx
+                break
+
+        if header_row is None:
+            found_rows = []
+            for r in range(1, min(ws.max_row, 10) + 1):
+                found_rows.append([str(ws.cell(r, c).value or "").strip() for c in range(1, min(ws.max_column, 12) + 1)])
+            raise ValueError(f"历史排班Excel缺少必要列，已检查工作表“{ws.title}”前10行: {found_rows}")
         name_to_id = {e.name: e.id for e in self.employees}
         rows = []
-        for r in range(2, ws.max_row + 1):
+        for r in range(header_row + 1, ws.max_row + 1):
             d_raw = ws.cell(r, idx["日期"]).value
             if d_raw is None:
                 continue
