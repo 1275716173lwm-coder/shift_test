@@ -176,8 +176,11 @@ class MainWindow(QMainWindow):
         self.btn_import_history.clicked.connect(self.import_history_from_file)
         self.btn_use_saved_history = QPushButton("引用排班数据库")
         self.btn_use_saved_history.clicked.connect(self.use_history_from_db)
+        self.btn_clear_saved_history = QPushButton("清除历史数据")
+        self.btn_clear_saved_history.clicked.connect(self.clear_saved_history_data)
         btns.addWidget(self.btn_import_history)
         btns.addWidget(self.btn_use_saved_history)
+        btns.addWidget(self.btn_clear_saved_history)
         left.addLayout(btns)
         left.addWidget(self.plan_calendar)
         self.plan_date_label = QLabel("当前日期: -")
@@ -629,6 +632,23 @@ class MainWindow(QMainWindow):
         self.history_team_year_totals = dict(team_totals)
         self.repo.save_history_import_cache("db", self._previous_month_key(), json.dumps(self.history_tail, ensure_ascii=False))
         QMessageBox.information(self, "成功", f"已从数据库引用历史尾部记录 {len(self.history_tail)} 条")
+
+    def clear_saved_history_data(self):
+        reply = QMessageBox.question(
+            self,
+            "确认清除",
+            "这会清除数据库中的排班结果、月度统计、年度统计和历史引用缓存，用于避免重复叠加。是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self.repo.clear_saved_schedule_stats()
+        self.history_tail = []
+        self.history_person_year_totals = {}
+        self.history_team_year_totals = {}
+        self.render_summary()
+        QMessageBox.information(self, "成功", "已清除排班统计历史数据")
 
     def _run_schedule(self, use_result_overrides: bool, seed: int):
         self.current_assignments = []

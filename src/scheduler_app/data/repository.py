@@ -369,6 +369,13 @@ class SchedulerRepository:
             ).fetchall()
             return {int(r["employee_id"]): int(r["c"]) for r in rows}
 
+    def clear_saved_schedule_stats(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM saved_schedules")
+            conn.execute("DELETE FROM monthly_stats_history")
+            conn.execute("DELETE FROM yearly_stats_ledger")
+            conn.execute("DELETE FROM history_import_cache")
+
     def save_history_import_cache(self, source_type: str, source_ref: str, payload_json: str) -> None:
         with self._connect() as conn:
             conn.execute(

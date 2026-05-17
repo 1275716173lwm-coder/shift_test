@@ -11,6 +11,23 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from scheduler_app.core.models import Assignment, Employee, POSITION_LABELS
 
 
+POSITION_EXPORT_ORDER = [
+    "SL_MAIN",
+    "SL_AIR",
+    "SL_GROUND",
+    "TF_MAIN",
+    "TF_GROUND",
+    "FLEET_LEAD",
+]
+
+
+def _person_position_dates(assignments: list[Assignment]) -> dict[int, dict[str, list[str]]]:
+    person_dates: dict[int, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    for a in sorted(assignments, key=lambda x: (x.employee_id, x.position, x.work_date)):
+        person_dates[a.employee_id][a.position].append(f"{a.work_date.month}-{a.work_date.day}")
+    return person_dates
+
+
 def export_csv(
     path: Path,
     assignments: list[Assignment],
@@ -28,6 +45,7 @@ def export_csv(
         team_month_totals[by_id[a.employee_id].team] += 1
     with path.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
+        person_dates = _person_position_dates(assignments)
         w.writerow(["日期", "岗位", "姓名", "大队", "中队", "类别", "职责", "人工"])
         for a in sorted(assignments, key=lambda x: (x.work_date, x.position)):
             e = by_id[a.employee_id]
@@ -52,6 +70,14 @@ def export_csv(
         all_teams = sorted({e.team for e in employees})
         for team in all_teams:
             w.writerow([team, team_month_totals.get(team, 0), team_year_totals.get(team, 0)])
+        w.writerow([])
+        w.writerow(["人员岗位日期明细"])
+        w.writerow(["姓名", "双流主班", "双流副班(空勤)", "双流副班(地勤)", "天府主班", "天府副班", "机队总负责"])
+        for e in employees:
+            row = [e.name]
+            for pos in POSITION_EXPORT_ORDER:
+                row.append("、".join(person_dates[e.id].get(pos, [])))
+            w.writerow(row)
 
 
 def export_excel(
@@ -71,6 +97,7 @@ def export_excel(
     head_fill = PatternFill("solid", fgColor="1F4E78")
     head_font = Font(color="FFFFFF", bold=True, size=11)
     title_font = Font(bold=True, size=14, color="1F2937")
+    detail_font = Font(size=12)
     center = Alignment(horizontal="center", vertical="center")
     thin = Side(style="thin", color="D9D9D9")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -87,6 +114,7 @@ def export_excel(
 
     weekday_map = {0: "星期一", 1: "星期二", 2: "星期三", 3: "星期四", 4: "星期五", 5: "星期六", 6: "星期日"}
     by_date_pos: dict = {}
+    person_dates = _person_position_dates(assignments)
     for a in assignments:
         by_date_pos[(a.work_date, a.position)] = a
 
@@ -226,5 +254,34 @@ def export_excel(
             if cell.row == 3:
                 cell.fill = head_fill
                 cell.font = head_font
+
+    person_position = wb.create_sheet("人员岗位日期")
+    person_position.merge_cells("A1:G1")
+    person_position["A1"] = "人员岗位日期明细"
+    person_position["A1"].font = title_font
+    person_position["A1"].alignment = center
+    person_position.append([])
+    person_position.append(["姓名", "双流主班", "双流副班(空勤)", "双流副班(地勤)", "天府主班", "天府副班", "机队总负责"])
+    for e in employees:
+        row = [e.name]
+        max_lines = 1
+        for pos in POSITION_EXPORT_ORDER:
+            text = "\n".join(person_dates[e.id].get(pos, []))
+            row.append(text)
+            max_lines = max(max_lines, len(person_dates[e.id].get(pos, [])) or 1)
+        person_position.append(row)
+        person_position.row_dimensions[person_position.max_row].height = max(28, 24 * max_lines)
+
+    for c, w in zip("ABCDEFG", [14, 18, 20, 20, 18, 16, 18]):
+        person_position.column_dimensions[c].width = w
+    for row in person_position.iter_rows(min_row=3, max_row=person_position.max_row, min_col=1, max_col=7):
+        for cell in row:
+            cell.border = border
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            if cell.row == 3:
+                cell.fill = head_fill
+                cell.font = head_font
+            else:
+                cell.font = detail_font
 
     wb.save(path)
