@@ -1,6 +1,8 @@
-﻿from datetime import date
+from datetime import date
 from pathlib import Path
 import tempfile
+
+from openpyxl import Workbook
 
 from scheduler_app.core.engine import SchedulerEngine
 from scheduler_app.core.models import Employee
@@ -13,6 +15,43 @@ def test_repo_seed_has_three_teams():
         repo.seed_if_empty()
         teams = {e.team for e in repo.load_employees()}
         assert teams == {"二", "三", "四"}
+
+
+def test_default_admin_login_available():
+    with tempfile.TemporaryDirectory() as td:
+        repo = SchedulerRepository(Path(td) / "a.db")
+        account = repo.verify_login("admin111", "admin111")
+        assert account is not None
+        assert account["is_admin"] is True
+
+
+def test_cannot_remove_last_admin():
+    with tempfile.TemporaryDirectory() as td:
+        repo = SchedulerRepository(Path(td) / "a.db")
+        admin = repo.verify_login("admin111", "admin111")
+        assert admin is not None
+        try:
+            repo.delete_account(admin["id"])
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "管理员" in str(exc)
+
+
+def test_audit_logs_can_be_filtered_and_survive_account_delete():
+    with tempfile.TemporaryDirectory() as td:
+        repo = SchedulerRepository(Path(td) / "a.db")
+        repo.create_account("user1", "pw1", False)
+        account = repo.verify_login("user1", "pw1")
+        assert account is not None
+        repo.add_audit_log(account["id"], account["username"], "login_success", "登录成功", "成功登录排班系统")
+        logs = repo.load_audit_logs(account["id"])
+        assert len(logs) == 1
+        assert logs[0]["username_snapshot"] == "user1"
+        repo.delete_account(account["id"])
+        all_logs = repo.load_audit_logs()
+        assert len(all_logs) == 1
+        audit_accounts = repo.list_audit_accounts()
+        assert audit_accounts[0]["username_snapshot"] == "user1"
 
 
 def test_engine_generates_assignments():
@@ -40,3 +79,47 @@ def test_engine_generates_assignments():
         manual_special_sl_main={},
     )
     assert len(res.assignments) >= 5
+
+
+def test_replace_employees_from_xlsx_reads_squad_column():
+    with tempfile.TemporaryDirectory() as td:
+        repo = SchedulerRepository(Path(td) / "a.db")
+        xlsx_path = Path(td) / "people.xlsx"
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["人员导入表", None, None, None, None, None])
+        ws.append(["姓名", "所属大队", "所属中队", "类别", "职务", "是否参与排班"])
+        ws.append(["张三", "二大队", "直属", "空勤", "中队长", "是"])
+        ws.append(["李四", "三大队", "2中队", "地勤", "中队书记", "是"])
+        wb.save(xlsx_path)
+
+        count = repo.replace_employees_from_xlsx(xlsx_path)
+
+        employees = repo.load_employees()
+        assert count == 2
+        assert [(e.name, e.team, e.squad) for e in employees] == [
+            ("张三", "二", "直属"),
+            ("李四", "三", "二中队"),
+        ]
+
+
+def test_replace_employees_from_xlsx_reads_short_squad_values():
+    with tempfile.TemporaryDirectory() as td:
+        repo = SchedulerRepository(Path(td) / "a.db")
+        xlsx_path = Path(td) / "people_short_squad.xlsx"
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["大队", "中队", "姓名", "类别", "职责"])
+        ws.append(["二", "一", "赵甲", "空勤", "中队长"])
+        ws.append(["三", "二", "钱乙", "地勤", "中队书记"])
+        ws.append(["四", "直属", "孙丙", "空勤", "副大队长_空勤"])
+        wb.save(xlsx_path)
+
+        repo.replace_employees_from_xlsx(xlsx_path)
+
+        employees = repo.load_employees()
+        assert [(e.name, e.team, e.squad) for e in employees] == [
+            ("赵甲", "二", "一中队"),
+            ("钱乙", "三", "二中队"),
+            ("孙丙", "四", "直属"),
+        ]

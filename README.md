@@ -22,7 +22,7 @@ python -m scheduler_app
 ```powershell
 python scripts\build_exe.py
 ```
-输出：`dist\SchedulerApp\SchedulerApp.exe`
+输出：`dist_exe_tmp\SchedulerApp\SchedulerApp.exe`
 
 ## 说明
 - 当前为 `PySide6` 桌面版（不是浏览器网页）。
@@ -34,3 +34,6 @@ cd "C:\Users\12757\OneDrive - cqu.edu.cn\飞行资料\CA\飞行部\排版工具\
 .\.venv\Scripts\Activate.ps1
 $env:PYTHONPATH = (Join-Path (Get-Location) 'src')
 python -m scheduler_app
+
+
+
