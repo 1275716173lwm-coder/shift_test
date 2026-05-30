@@ -425,6 +425,13 @@ class MainWindow(QMainWindow):
         self.leave_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.leave_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         layout.addWidget(self.leave_table, 2)
+        leave_message_toolbar = QHBoxLayout()
+        leave_message_toolbar.addWidget(QLabel("操作记录"))
+        leave_message_toolbar.addStretch(1)
+        self.btn_clear_leave_messages = QPushButton("清空记录")
+        self.btn_clear_leave_messages.clicked.connect(self.clear_leave_messages)
+        leave_message_toolbar.addWidget(self.btn_clear_leave_messages)
+        layout.addLayout(leave_message_toolbar)
         self.leave_message_box = QPlainTextEdit()
         self.leave_message_box.setReadOnly(True)
         self.leave_message_box.setPlaceholderText("\u8bf7\u5047\u64cd\u4f5c\u63d0\u793a\u4f1a\u663e\u793a\u5728\u8fd9\u91cc")
@@ -963,9 +970,9 @@ class MainWindow(QMainWindow):
         is_leave = self.repo.toggle_leave(eid, d)
         person_label = self.leave_person.currentText().split("-", 2)[1] if "-" in self.leave_person.currentText() else self.leave_person.currentText()
         action = "\u65b0\u589e\u8bf7\u5047" if is_leave else "\u53d6\u6d88\u8bf7\u5047"
-        action = "鏂板璇峰亣" if is_leave else "鍙栨秷璇峰亣"
         self._audit("leave_toggle", "修改请假", f"{person_label}：{d.isoformat()}，{action}")
         self.leave_message_box.appendPlainText(f"{person_label}\uff1a{d.year}/{d.month}/{d.day}\uff0c{action}")
+        self.refresh_leave_list()
 
     def refresh_leave_list(self):
         self.leave_table.setRowCount(0)
@@ -979,7 +986,7 @@ class MainWindow(QMainWindow):
             item = QTableWidgetItem(f"{person_label}：{d.year}/{d.month}/{d.day}")
             item.setData(Qt.UserRole, d.isoformat())
             self.leave_table.setItem(i, 0, item)
-            btn = QPushButton("鍒犻櫎")
+            btn = QPushButton("删除")
             btn.clicked.connect(lambda _, dd=d, ee=eid: self.remove_leave_item(ee, dd))
             self.leave_table.setCellWidget(i, 1, btn)
 
@@ -992,6 +999,7 @@ class MainWindow(QMainWindow):
         self.repo.remove_leave(eid, d)
         person_label = self.leave_person.currentText().split("-", 2)[1] if "-" in self.leave_person.currentText() else self.leave_person.currentText()
         self._audit("leave_remove", "删除请假", f"{person_label}：{d.isoformat()}")
+        self.leave_message_box.appendPlainText(f"{person_label}：{d.year}/{d.month}/{d.day}，删除请假")
         self.refresh_leave_list()
 
     def remove_leave_item(self, eid: int, d: date):
@@ -999,6 +1007,7 @@ class MainWindow(QMainWindow):
         employee = {e.id: e for e in self.employees}.get(eid)
         if employee is not None:
             self._audit("leave_remove", "删除请假", f"{employee.name}：{d.isoformat()}")
+            self.leave_message_box.appendPlainText(f"{employee.name}：{d.year}/{d.month}/{d.day}，删除请假")
         self.refresh_leave_list()
 
     def clear_all_leave_for_person(self):
@@ -1009,12 +1018,17 @@ class MainWindow(QMainWindow):
         employee = {e.id: e for e in self.employees}.get(eid)
         if employee is not None:
             self._audit("leave_clear_person", "清空个人请假", f"{employee.name}：清空全部请假")
+            self.leave_message_box.appendPlainText(f"{employee.name}：清空全部请假")
         self.refresh_leave_list()
 
     def clear_all_leave_for_everyone(self):
         self.repo.clear_all_leaves()
         self._audit("leave_clear_all", "清空所有请假", "清空了所有人员请假记录")
+        self.leave_message_box.appendPlainText("所有人员：清空全部请假")
         self.refresh_leave_list()
+
+    def clear_leave_messages(self):
+        self.leave_message_box.clear()
 
     def on_plan_calendar_clicked(self):
         self.current_plan_date = self.plan_calendar.selectedDate().toPython()
@@ -1382,7 +1396,7 @@ class MainWindow(QMainWindow):
         self.result_status_label.setText(
             f"结果状态：已刷新（共 {len(self.current_assignments)} 条岗位安排，日志 {len(self.current_logs)} 条）"
         )
-        # 姣忔閲嶆帓鍚庡垏鎹㈠埌鈥滄帓鐝粨鏋溾€濋〉锛岀‘淇濈敤鎴风珛鍗崇湅鍒版渶鏂扮粨鏋溿€?
+        # 每次重排后切换到“排班结果”页，确保界面立即显示最新结果。
         self.tabs.setCurrentWidget(self.tab_result)
         self.result_table.viewport().update()
         self.summary_table.viewport().update()
