@@ -1,12 +1,13 @@
-from datetime import date
+﻿from datetime import date
 from pathlib import Path
 import tempfile
 
 from openpyxl import Workbook
 
 from scheduler_app.core.engine import SchedulerEngine
-from scheduler_app.core.models import Employee
+from scheduler_app.core.models import Assignment, Employee
 from scheduler_app.data.repository import SchedulerRepository
+from scheduler_app.ui.main_window import MainWindow
 
 
 def test_repo_seed_has_three_teams():
@@ -123,3 +124,68 @@ def test_replace_employees_from_xlsx_reads_short_squad_values():
             ("钱乙", "三", "二中队"),
             ("孙丙", "四", "直属"),
         ]
+
+def test_save_schedule_and_stats_counts_same_day_dual_roles_once():
+    with tempfile.TemporaryDirectory() as td:
+        repo = SchedulerRepository(Path(td) / "a.db")
+        employees = [
+            Employee(1, "张三", "二大队", "一中队", "空勤", "中队长", True),
+            Employee(2, "李四", "三大队", "一中队", "空勤", "中队长", True),
+        ]
+        assignments = [
+            Assignment(date(2026, 5, 1), "SL_MAIN", 1),
+            Assignment(date(2026, 5, 1), "FLEET_LEAD", 1),
+            Assignment(date(2026, 5, 1), "TF_MAIN", 2),
+        ]
+
+        repo.save_schedule_and_stats(assignments, employees, "2026-05")
+
+        assert repo.monthly_person_totals("2026-05") == {1: 1, 2: 1}
+        assert repo.yearly_totals("2026") == {1: 1, 2: 1}
+
+
+def test_current_year_totals_do_not_double_count_saved_current_month():
+    with tempfile.TemporaryDirectory() as td:
+        repo = SchedulerRepository(Path(td) / "a.db")
+        employees = [
+            Employee(1, "张三", "二大队", "一中队", "空勤", "中队长", True),
+            Employee(2, "李四", "三大队", "一中队", "空勤", "中队长", True),
+        ]
+        assignments = [
+            Assignment(date(2026, 5, 1), "SL_MAIN", 1),
+            Assignment(date(2026, 5, 1), "FLEET_LEAD", 1),
+            Assignment(date(2026, 5, 2), "TF_MAIN", 2),
+        ]
+        repo.save_schedule_and_stats(assignments, employees, "2026-05")
+
+        fake_window = MainWindow.__new__(MainWindow)
+        fake_window.current_assignments = assignments
+        fake_window.repo = repo
+        fake_window.history_person_year_totals = {}
+        fake_window.history_team_year_totals = {}
+        fake_window.employees = employees
+        fake_window._month_start = lambda: date(2026, 5, 1)
+
+        person_year_totals, team_year_totals = MainWindow._current_year_totals(fake_window)
+
+        assert person_year_totals == {1: 1, 2: 1}
+        assert team_year_totals == {"二大队": 1, "三大队": 1}
+
+
+def test_export_allows_employees_with_zero_month_assignments(tmp_path):
+    from scheduler_app.services.exporter import export_csv, export_excel
+
+    employees = [
+        Employee(1, "张三", "二大队", "一中队", "空勤", "中队长", True),
+        Employee(7, "赵六", "三大队", "一中队", "空勤", "中队长", True),
+    ]
+    assignments = [
+        Assignment(date(2026, 6, 1), "SL_MAIN", 1),
+        Assignment(date(2026, 6, 1), "FLEET_LEAD", 1),
+    ]
+
+    export_csv(tmp_path / "out.csv", assignments, employees, person_year_totals={1: 1}, team_year_totals={"二大队": 1, "三大队": 0})
+    export_excel(tmp_path / "out.xlsx", assignments, employees, {}, person_year_totals={1: 1}, team_year_totals={"二大队": 1, "三大队": 0})
+
+    assert (tmp_path / "out.csv").exists()
+    assert (tmp_path / "out.xlsx").exists()

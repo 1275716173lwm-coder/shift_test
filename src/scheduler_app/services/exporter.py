@@ -21,6 +21,33 @@ POSITION_EXPORT_ORDER = [
 ]
 
 
+def _count_duty_days_by_person(assignments: list[Assignment]) -> dict[int, int]:
+    counts: dict[int, int] = defaultdict(int)
+    seen: set[tuple] = set()
+    for a in assignments:
+        key = (a.work_date, a.employee_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        counts[a.employee_id] += 1
+    return dict(counts)
+
+
+def _count_duty_days_by_team(assignments: list[Assignment], employees: list[Employee]) -> dict[str, int]:
+    by_id = {e.id: e for e in employees}
+    counts: dict[str, int] = defaultdict(int)
+    seen: set[tuple] = set()
+    for a in assignments:
+        key = (a.work_date, a.employee_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        employee = by_id.get(a.employee_id)
+        if employee is not None:
+            counts[employee.team] += 1
+    return dict(counts)
+
+
 def _person_position_dates(assignments: list[Assignment]) -> dict[int, dict[str, list[str]]]:
     person_dates: dict[int, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
     for a in sorted(assignments, key=lambda x: (x.employee_id, x.position, x.work_date)):
@@ -38,11 +65,8 @@ def export_csv(
     by_id = {e.id: e for e in employees}
     person_year_totals = person_year_totals or {}
     team_year_totals = team_year_totals or {}
-    person_month_totals = defaultdict(int)
-    team_month_totals = defaultdict(int)
-    for a in assignments:
-        person_month_totals[a.employee_id] += 1
-        team_month_totals[by_id[a.employee_id].team] += 1
+    person_month_totals = _count_duty_days_by_person(assignments)
+    team_month_totals = _count_duty_days_by_team(assignments, employees)
     with path.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         person_dates = _person_position_dates(assignments)
@@ -63,7 +87,7 @@ def export_csv(
         w.writerow(["人员统计"])
         w.writerow(["姓名", "大队", "中队", "月度值班总数", "年度值班总数"])
         for e in employees:
-            w.writerow([e.name, e.team, e.squad, person_month_totals[e.id], person_year_totals.get(e.id, 0)])
+            w.writerow([e.name, e.team, e.squad, person_month_totals.get(e.id, 0), person_year_totals.get(e.id, 0)])
         w.writerow([])
         w.writerow(["大队统计"])
         w.writerow(["大队", "月度值班总数", "年度值班总数"])
@@ -178,11 +202,9 @@ def export_excel(
     person_month["A1"].alignment = center
     person_month.append([])
     person_month.append(["姓名", "大队", "中队", "月度值班总数", "年度值班总数"])
-    p_counter = defaultdict(int)
-    for a in assignments:
-        p_counter[a.employee_id] += 1
+    p_counter = _count_duty_days_by_person(assignments)
     for e in employees:
-        person_month.append([e.name, e.team, e.squad, p_counter[e.id], person_year_totals.get(e.id, 0)])
+        person_month.append([e.name, e.team, e.squad, p_counter.get(e.id, 0), person_year_totals.get(e.id, 0)])
 
     for c, w in zip("ABCDE", [14, 10, 12, 14, 14]):
         person_month.column_dimensions[c].width = w
@@ -201,9 +223,7 @@ def export_excel(
     team_month["A1"].alignment = center
     team_month.append([])
     team_month.append(["大队", "月度值班总数", "年度值班总数"])
-    t_counter = defaultdict(int)
-    for a in assignments:
-        t_counter[by_id[a.employee_id].team] += 1
+    t_counter = _count_duty_days_by_team(assignments, employees)
     for team in sorted({e.team for e in employees}):
         team_month.append([team, t_counter.get(team, 0), team_year_totals.get(team, 0)])
 

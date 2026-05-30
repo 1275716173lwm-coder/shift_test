@@ -23,6 +23,7 @@ python -m scheduler_app
 python scripts\build_exe.py
 ```
 输出：`dist_exe_tmp\SchedulerApp\SchedulerApp.exe`
+- 脚本会自动清理旧的 `build_exe_tmp` 构建目录；正常情况下不需要再手动执行 `attrib` 或删除命令。
 
 ## 说明
 - 当前为 `PySide6` 桌面版（不是浏览器网页）。
@@ -34,6 +35,5 @@ cd "C:\Users\12757\OneDrive - cqu.edu.cn\飞行资料\CA\飞行部\排版工具\
 .\.venv\Scripts\Activate.ps1
 $env:PYTHONPATH = (Join-Path (Get-Location) 'src')
 python -m scheduler_app
-
 
 

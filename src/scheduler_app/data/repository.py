@@ -34,6 +34,33 @@ POSITION_NAME_TO_CODE = {
 }
 
 
+def _count_duty_days_by_person(assignments: list[Assignment]) -> dict[int, int]:
+    counts: dict[int, int] = defaultdict(int)
+    seen: set[tuple[date, int]] = set()
+    for a in assignments:
+        key = (a.work_date, a.employee_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        counts[a.employee_id] += 1
+    return dict(counts)
+
+
+def _count_duty_days_by_team(assignments: list[Assignment], employees: list[Employee]) -> dict[str, int]:
+    by_id = {e.id: e for e in employees}
+    counts: dict[str, int] = defaultdict(int)
+    seen: set[tuple[date, int]] = set()
+    for a in assignments:
+        key = (a.work_date, a.employee_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        employee = by_id.get(a.employee_id)
+        if employee is not None:
+            counts[employee.team] += 1
+    return dict(counts)
+
+
 class SchedulerRepository:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -631,13 +658,9 @@ class SchedulerRepository:
     def save_schedule_and_stats(self, assignments: list[Assignment], employees: list[Employee], month_key: str) -> None:
         by_id = {e.id: e for e in employees}
         saved_at = datetime.now().isoformat(timespec="seconds")
-        month_person = {}
-        month_team = {}
+        month_person = _count_duty_days_by_person(assignments)
+        month_team = _count_duty_days_by_team(assignments, employees)
         year_key = month_key[:4]
-        for a in assignments:
-            month_person[a.employee_id] = month_person.get(a.employee_id, 0) + 1
-            team = by_id[a.employee_id].team if a.employee_id in by_id else "-"
-            month_team[team] = month_team.get(team, 0) + 1
         with self._connect() as conn:
             for a in assignments:
                 conn.execute(
@@ -712,6 +735,30 @@ class SchedulerRepository:
                 (year_key,),
             ).fetchall()
             return {int(r["employee_id"]): int(r["c"]) for r in rows}
+
+    def monthly_person_totals(self, month_key: str) -> dict[int, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT subject_id, count_value
+                FROM monthly_stats_history
+                WHERE month_key=? AND scope='person'
+                """,
+                (month_key,),
+            ).fetchall()
+        return {int(r["subject_id"]): int(r["count_value"]) for r in rows}
+
+    def monthly_team_totals(self, month_key: str) -> dict[str, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT subject_id, count_value
+                FROM monthly_stats_history
+                WHERE month_key=? AND scope='team'
+                """,
+                (month_key,),
+            ).fetchall()
+        return {str(r["subject_id"]): int(r["count_value"]) for r in rows}
 
     def clear_saved_schedule_stats(self) -> None:
         with self._connect() as conn:

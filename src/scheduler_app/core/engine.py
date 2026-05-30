@@ -19,6 +19,8 @@ class SchedulerEngine:
         history_tail: list[dict] | None = None,
         manual_overrides: dict[tuple[date, str], int] | None = None,
         rerun_seed: int = 0,
+        person_month_baseline: dict[int, int] | None = None,
+        team_month_baseline: dict[str, int] | None = None,
         person_year_baseline: dict[int, int] | None = None,
         team_year_baseline: dict[str, int] | None = None,
     ) -> ScheduleResult:
@@ -27,12 +29,18 @@ class SchedulerEngine:
         assignments: list[Assignment] = []
         manual_overrides = manual_overrides or {}
         history_tail = history_tail or []
+        person_month_baseline = person_month_baseline or {}
+        team_month_baseline = team_month_baseline or {}
         person_year_baseline = person_year_baseline or {}
         team_year_baseline = team_year_baseline or {}
 
         team_counts = defaultdict(lambda: defaultdict(int))
         person_days = defaultdict(list)
+        person_last_date: dict[int, date] = {}
+        person_month_counts = defaultdict(int)
+        person_pos_counts = defaultdict(lambda: defaultdict(int))
         fleet_counts = defaultdict(int)
+        team_last_dates = defaultdict(dict)
         last_sl_main_team = None
         last_tf_main_team = None
 
@@ -44,7 +52,9 @@ class SchedulerEngine:
             if not e:
                 continue
             person_days[eid].append(d)
+            person_last_date[eid] = max(person_last_date.get(eid, d), d)
             team_counts[e.team][pos] += 1
+            team_last_dates[e.team][pos] = d
             if pos == "FLEET_LEAD":
                 fleet_counts[eid] += 1
             if pos == "SL_MAIN":
@@ -69,14 +79,22 @@ class SchedulerEngine:
                 return False
             return True
 
+        def team_gap_days(team: str, pos: str, d: date) -> int:
+            last = team_last_dates[team].get(pos)
+            if last is None:
+                return 9999
+            return (d - last).days
+
         def pick_person(cands: list[Employee], pos: str, d: date) -> Employee | None:
             if not cands:
                 return None
             cands.sort(
                 key=lambda x: (
-                    team_counts[x.team][pos],
+                    person_month_counts[x.id],
+                    person_pos_counts[x.id][pos],
+                    person_month_baseline.get(x.id, 0),
                     person_year_baseline.get(x.id, 0),
-                    len(person_days[x.id]),
+                    person_last_date.get(x.id, date.min),
                     x.id,
                 )
             )
@@ -85,15 +103,19 @@ class SchedulerEngine:
             while i < len(cands):
                 j = i + 1
                 key0 = (
-                    team_counts[cands[i].team][pos],
+                    person_month_counts[cands[i].id],
+                    person_pos_counts[cands[i].id][pos],
+                    person_month_baseline.get(cands[i].id, 0),
                     person_year_baseline.get(cands[i].id, 0),
-                    len(person_days[cands[i].id]),
+                    person_last_date.get(cands[i].id, date.min),
                 )
                 while j < len(cands):
                     keyj = (
-                        team_counts[cands[j].team][pos],
+                        person_month_counts[cands[j].id],
+                        person_pos_counts[cands[j].id][pos],
+                        person_month_baseline.get(cands[j].id, 0),
                         person_year_baseline.get(cands[j].id, 0),
-                        len(person_days[cands[j].id]),
+                        person_last_date.get(cands[j].id, date.min),
                     )
                     if keyj != key0:
                         break
@@ -108,25 +130,42 @@ class SchedulerEngine:
         def pick_team(cands: set[str], pos: str, last_team: str | None, d: date) -> str | None:
             if not cands:
                 return None
+            if pos in {"SL_MAIN", "TF_MAIN"}:
+                overdue = [t for t in cands if team_gap_days(t, pos, d) >= 4]
+                if overdue:
+                    cands = set(overdue)
             ranked = sorted(
                 cands,
                 key=lambda t: (
+                    0 if pos in {"SL_MAIN", "TF_MAIN"} and team_gap_days(t, pos, d) >= 4 else 1,
                     team_counts[t][pos],
+                    team_month_baseline.get(t, 0),
                     team_year_baseline.get(t, 0),
+                    team_last_dates[t].get(pos, date.min),
                     t == last_team,
                     t,
                 ),
             )
             if len(ranked) > 1:
                 best = (
+                    0 if pos in {"SL_MAIN", "TF_MAIN"} and team_gap_days(ranked[0], pos, d) >= 4 else 1,
                     team_counts[ranked[0]][pos],
+                    team_month_baseline.get(ranked[0], 0),
                     team_year_baseline.get(ranked[0], 0),
+                    team_last_dates[ranked[0]].get(pos, date.min),
                     ranked[0] == last_team,
                 )
                 tie = [
                     t
                     for t in ranked
-                    if (team_counts[t][pos], team_year_baseline.get(t, 0), t == last_team) == best
+                    if (
+                        0 if pos in {"SL_MAIN", "TF_MAIN"} and team_gap_days(t, pos, d) >= 4 else 1,
+                        team_counts[t][pos],
+                        team_month_baseline.get(t, 0),
+                        team_year_baseline.get(t, 0),
+                        team_last_dates[t].get(pos, date.min),
+                        t == last_team,
+                    ) == best
                 ]
                 if len(tie) > 1:
                     rng = random.Random(f"{rerun_seed}:{d.isoformat()}:{pos}:team")
@@ -280,7 +319,11 @@ class SchedulerEngine:
             for a in day_asg.values():
                 assignments.append(a)
                 person_days[a.employee_id].append(d)
+                person_last_date[a.employee_id] = d
+                person_month_counts[a.employee_id] += 1
+                person_pos_counts[a.employee_id][a.position] += 1
                 team_counts[em_by_id[a.employee_id].team][a.position] += 1
+                team_last_dates[em_by_id[a.employee_id].team][a.position] = d
                 if a.position == "FLEET_LEAD":
                     fleet_counts[a.employee_id] += 1
             last_sl_main_team = sl_main_team
