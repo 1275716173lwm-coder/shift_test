@@ -529,6 +529,10 @@ class MainWindow(QMainWindow):
         self.btn_refresh_audit_logs.clicked.connect(self.refresh_audit_logs_view)
         self.btn_refresh_audit_logs.setEnabled(False)
         filter_row.addWidget(self.btn_refresh_audit_logs)
+        self.btn_clear_audit_logs = QPushButton("清空日志")
+        self.btn_clear_audit_logs.clicked.connect(self.clear_audit_logs)
+        self.btn_clear_audit_logs.setEnabled(False)
+        filter_row.addWidget(self.btn_clear_audit_logs)
         filter_row.addStretch(1)
         layout.addLayout(filter_row)
         self.audit_logs_table = QTableWidget(0, 4)
@@ -563,6 +567,7 @@ class MainWindow(QMainWindow):
             self.btn_add_account.setEnabled(True)
             self.btn_refresh_audit_logs.setEnabled(True)
             self.btn_export_audit_logs.setEnabled(True)
+            self.btn_clear_audit_logs.setEnabled(True)
             self.refresh_accounts_table()
             self.refresh_audit_filter_combo()
             self.refresh_audit_logs_table()
@@ -578,6 +583,8 @@ class MainWindow(QMainWindow):
             self.btn_refresh_audit_logs.setEnabled(False)
         if hasattr(self, "btn_export_audit_logs"):
             self.btn_export_audit_logs.setEnabled(False)
+        if hasattr(self, "btn_clear_audit_logs"):
+            self.btn_clear_audit_logs.setEnabled(False)
         if hasattr(self, "accounts_table"):
             self.accounts_table.setRowCount(0)
         if hasattr(self, "audit_filter_combo"):
@@ -686,6 +693,29 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "导出完成", f"已导出 {len(logs)} 条日志到：\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
+
+    def clear_audit_logs(self):
+        if not self.account_management_verified:
+            return
+        account_id = self.audit_filter_combo.currentData()
+        account_label = self.audit_filter_combo.currentText() or "全部账号"
+        if account_id is None:
+            prompt = "确定清空全部账号的操作日志吗？此操作不可恢复。"
+        else:
+            prompt = f"确定清空账号“{account_label}”的操作日志吗？此操作不可恢复。"
+        reply = QMessageBox.question(
+            self,
+            "确认清空日志",
+            prompt,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        count = self.repo.clear_audit_logs(account_id)
+        self.refresh_audit_filter_combo()
+        self.refresh_audit_logs_table()
+        QMessageBox.information(self, "清空完成", f"已清空 {count} 条日志")
 
     def add_account(self):
         if not self.account_management_verified:

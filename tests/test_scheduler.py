@@ -55,6 +55,28 @@ def test_audit_logs_can_be_filtered_and_survive_account_delete():
         assert audit_accounts[0]["username_snapshot"] == "user1"
 
 
+def test_audit_logs_can_be_cleared_by_account_or_all():
+    with tempfile.TemporaryDirectory() as td:
+        repo = SchedulerRepository(Path(td) / "a.db")
+        repo.create_account("user1", "pw1", False)
+        repo.create_account("user2", "pw2", False)
+        account1 = repo.verify_login("user1", "pw1")
+        account2 = repo.verify_login("user2", "pw2")
+        assert account1 is not None and account2 is not None
+
+        repo.add_audit_log(account1["id"], account1["username"], "a1", "操作1", "详情1")
+        repo.add_audit_log(account2["id"], account2["username"], "a2", "操作2", "详情2")
+
+        cleared = repo.clear_audit_logs(account1["id"])
+        assert cleared == 1
+        assert len(repo.load_audit_logs(account1["id"])) == 0
+        assert len(repo.load_audit_logs(account2["id"])) == 1
+
+        cleared_all = repo.clear_audit_logs()
+        assert cleared_all == 1
+        assert repo.load_audit_logs() == []
+
+
 def test_engine_generates_assignments():
     employees = [
         Employee(1, "二空1", "二", "一中队", "空勤", "中队长", True),

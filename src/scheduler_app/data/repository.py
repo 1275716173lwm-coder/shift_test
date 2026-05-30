@@ -363,6 +363,19 @@ class SchedulerRepository:
                 for row in rows
             ]
 
+    def clear_audit_logs(self, account_id: int | None = None) -> int:
+        with self._connect() as conn:
+            if account_id is None:
+                count = conn.execute("SELECT COUNT(*) AS n FROM account_audit_logs").fetchone()["n"]
+                conn.execute("DELETE FROM account_audit_logs")
+            else:
+                count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM account_audit_logs WHERE account_id=?",
+                    (account_id,),
+                ).fetchone()["n"]
+                conn.execute("DELETE FROM account_audit_logs WHERE account_id=?", (account_id,))
+        return int(count)
+
     def seed_if_empty(self) -> None:
         with self._connect() as conn:
             n = conn.execute("SELECT COUNT(*) n FROM employees").fetchone()["n"]
