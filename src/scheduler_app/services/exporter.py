@@ -2,7 +2,7 @@
 
 import csv
 from collections import defaultdict
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -19,6 +19,12 @@ POSITION_EXPORT_ORDER = [
     "TF_GROUND",
     "FLEET_LEAD",
 ]
+
+TEAM_EXPORT_FILLS = {
+    "二": PatternFill("solid", fgColor="FCE4D6"),
+    "三": PatternFill("solid", fgColor="E2F0D9"),
+    "四": PatternFill("solid", fgColor="DDEBF7"),
+}
 
 
 def _count_duty_days_by_person(assignments: list[Assignment]) -> dict[int, int]:
@@ -51,8 +57,15 @@ def _count_duty_days_by_team(assignments: list[Assignment], employees: list[Empl
 def _person_position_dates(assignments: list[Assignment]) -> dict[int, dict[str, list[str]]]:
     person_dates: dict[int, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
     for a in sorted(assignments, key=lambda x: (x.employee_id, x.position, x.work_date)):
-        person_dates[a.employee_id][a.position].append(f"{a.work_date.month}-{a.work_date.day}")
+        person_dates[a.employee_id][a.position].append(str(a.work_date.day))
     return person_dates
+
+
+def _team_fill(team: str) -> PatternFill | None:
+    team_text = str(team or "").strip()
+    if team_text.endswith("大队"):
+        team_text = team_text[:-2]
+    return TEAM_EXPORT_FILLS.get(team_text)
 
 
 def export_csv(
@@ -195,9 +208,37 @@ def export_excel(
                 cell.fill = head_fill
                 cell.font = head_font
 
-    person_month = wb.create_sheet("人员月度统计")
+    export_name_cols = {
+        4: "SL_MAIN",
+        5: "SL_AIR",
+        6: "SL_GROUND",
+        7: "TF_MAIN",
+        8: "TF_GROUND",
+        9: "FLEET_LEAD",
+    }
+    for row_idx in range(4, ws.max_row + 1):
+        work_date = ws.cell(row_idx, 1).value
+        if work_date in (None, ""):
+            continue
+        if hasattr(work_date, "date"):
+            work_date = work_date.date()
+        elif hasattr(work_date, "year"):
+            work_date = work_date
+        else:
+            work_date = date.fromisoformat(str(work_date)[:10])
+        if work_date is None:
+            continue
+        for col_idx, pos_code in export_name_cols.items():
+            assignment = by_date_pos.get((work_date, pos_code))
+            if assignment is None:
+                continue
+            fill = _team_fill(by_id[assignment.employee_id].team)
+            if fill is not None:
+                ws.cell(row_idx, col_idx).fill = fill
+
+    person_month = wb.create_sheet("人员值班统计")
     person_month.merge_cells("A1:E1")
-    person_month["A1"] = "人员月度统计"
+    person_month["A1"] = "人员值班统计"
     person_month["A1"].font = title_font
     person_month["A1"].alignment = center
     person_month.append([])
@@ -216,9 +257,9 @@ def export_excel(
                 cell.fill = head_fill
                 cell.font = head_font
 
-    team_month = wb.create_sheet("大队月度统计")
+    team_month = wb.create_sheet("大队值班统计")
     team_month.merge_cells("A1:C1")
-    team_month["A1"] = "大队月度统计"
+    team_month["A1"] = "大队值班统计"
     team_month["A1"].font = title_font
     team_month["A1"].alignment = center
     team_month.append([])
@@ -237,67 +278,68 @@ def export_excel(
                 cell.fill = head_fill
                 cell.font = head_font
 
-    person_year = wb.create_sheet("人员年度统计")
-    person_year.merge_cells("A1:D1")
-    person_year["A1"] = "人员年度统计"
-    person_year["A1"].font = title_font
-    person_year["A1"].alignment = center
-    person_year.append([])
-    person_year.append(["姓名", "大队", "中队", "年度值班总数"])
-    for e in employees:
-        person_year.append([e.name, e.team, e.squad, person_year_totals.get(e.id, 0)])
-    for c, w in zip("ABCD", [14, 10, 12, 16]):
-        person_year.column_dimensions[c].width = w
-    for row in person_year.iter_rows(min_row=3, max_row=person_year.max_row, min_col=1, max_col=4):
-        for cell in row:
-            cell.border = border
-            cell.alignment = center
-            if cell.row == 3:
-                cell.fill = head_fill
-                cell.font = head_font
+    # person_year = wb.create_sheet("人员年度统计")
+    # person_year.merge_cells("A1:D1")
+    # person_year["A1"] = "人员年度统计"
+    # person_year["A1"].font = title_font
+    # person_year["A1"].alignment = center
+    # person_year.append([])
+    # person_year.append(["姓名", "大队", "中队", "年度值班总数"])
+    # for e in employees:
+    #     person_year.append([e.name, e.team, e.squad, person_year_totals.get(e.id, 0)])
+    # for c, w in zip("ABCD", [14, 10, 12, 16]):
+    #     person_year.column_dimensions[c].width = w
+    # for row in person_year.iter_rows(min_row=3, max_row=person_year.max_row, min_col=1, max_col=4):
+    #     for cell in row:
+    #         cell.border = border
+    #         cell.alignment = center
+    #         if cell.row == 3:
+    #             cell.fill = head_fill
+    #             cell.font = head_font
 
-    team_year = wb.create_sheet("大队年度统计")
-    team_year.merge_cells("A1:B1")
-    team_year["A1"] = "大队年度统计"
-    team_year["A1"].font = title_font
-    team_year["A1"].alignment = center
-    team_year.append([])
-    team_year.append(["大队", "年度值班总数"])
-    for team in sorted({e.team for e in employees}):
-        team_year.append([team, team_year_totals.get(team, 0)])
-    for c, w in zip("AB", [12, 16]):
-        team_year.column_dimensions[c].width = w
-    for row in team_year.iter_rows(min_row=3, max_row=team_year.max_row, min_col=1, max_col=2):
-        for cell in row:
-            cell.border = border
-            cell.alignment = center
-            if cell.row == 3:
-                cell.fill = head_fill
-                cell.font = head_font
+    # team_year = wb.create_sheet("大队年度统计")
+    # team_year.merge_cells("A1:B1")
+    # team_year["A1"] = "大队年度统计"
+    # team_year["A1"].font = title_font
+    # team_year["A1"].alignment = center
+    # team_year.append([])
+    # team_year.append(["大队", "年度值班总数"])
+    # for team in sorted({e.team for e in employees}):
+    #     team_year.append([team, team_year_totals.get(team, 0)])
+    # for c, w in zip("AB", [12, 16]):
+    #     team_year.column_dimensions[c].width = w
+    # for row in team_year.iter_rows(min_row=3, max_row=team_year.max_row, min_col=1, max_col=2):
+    #     for cell in row:
+    #         cell.border = border
+    #         cell.alignment = center
+    #         if cell.row == 3:
+    #             cell.fill = head_fill
+    #             cell.font = head_font
 
     person_position = wb.create_sheet("人员岗位日期")
     person_position.merge_cells("A1:G1")
-    person_position["A1"] = "人员岗位日期明细"
+    if all_dates:
+        person_position["A1"] = f"{all_dates[0].year}年{all_dates[0].month}月人员岗位日期明细"
+    else:
+        person_position["A1"] = "人员岗位日期明细"
     person_position["A1"].font = title_font
     person_position["A1"].alignment = center
     person_position.append([])
     person_position.append(["姓名", "双流主班", "双流副班(空勤)", "双流副班(地勤)", "天府主班", "天府副班", "机队总负责"])
     for e in employees:
         row = [e.name]
-        max_lines = 1
         for pos in POSITION_EXPORT_ORDER:
-            text = "\n".join(person_dates[e.id].get(pos, []))
+            text = "、".join(person_dates[e.id].get(pos, []))
             row.append(text)
-            max_lines = max(max_lines, len(person_dates[e.id].get(pos, [])) or 1)
         person_position.append(row)
-        person_position.row_dimensions[person_position.max_row].height = max(28, 24 * max_lines)
+        person_position.row_dimensions[person_position.max_row].height = 28
 
     for c, w in zip("ABCDEFG", [14, 18, 20, 20, 18, 16, 18]):
         person_position.column_dimensions[c].width = w
     for row in person_position.iter_rows(min_row=3, max_row=person_position.max_row, min_col=1, max_col=7):
         for cell in row:
             cell.border = border
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
             if cell.row == 3:
                 cell.fill = head_fill
                 cell.font = head_font

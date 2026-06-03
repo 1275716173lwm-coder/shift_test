@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from scheduler_app.core.engine import SchedulerEngine
 from scheduler_app.core.models import Assignment, Employee
@@ -211,3 +211,45 @@ def test_export_allows_employees_with_zero_month_assignments(tmp_path):
 
     assert (tmp_path / "out.csv").exists()
     assert (tmp_path / "out.xlsx").exists()
+
+
+def test_export_excel_applies_team_colors_and_month_title(tmp_path):
+    from scheduler_app.services.exporter import export_excel
+
+    employees = [
+        Employee(1, "张三", "二大队", "一中队", "空勤", "中队长", True),
+        Employee(2, "李四", "三大队", "一中队", "空勤", "中队长", True),
+        Employee(3, "王五", "四大队", "一中队", "地勤", "中队书记", True),
+    ]
+    assignments = [
+        Assignment(date(2026, 6, 1), "SL_MAIN", 1),
+        Assignment(date(2026, 6, 3), "SL_MAIN", 1),
+        Assignment(date(2026, 6, 1), "FLEET_LEAD", 1),
+        Assignment(date(2026, 6, 1), "TF_MAIN", 2),
+        Assignment(date(2026, 6, 1), "SL_GROUND", 3),
+    ]
+
+    out_path = tmp_path / "styled.xlsx"
+    export_excel(out_path, assignments, employees, {}, person_year_totals={1: 2}, team_year_totals={"二大队": 1, "三大队": 1, "四大队": 1})
+
+    wb = load_workbook(out_path, data_only=True)
+    result_ws = wb["排班结果"]
+    person_position_ws = wb["人员岗位日期"]
+
+    assert result_ws["A3"].value == "日期"
+    assert result_ws["A4"].value == "2026-06-01"
+
+    sl_main_fill = result_ws["D4"].fill.fgColor.rgb
+    fleet_fill = result_ws["I4"].fill.fgColor.rgb
+    tf_main_fill = result_ws["G4"].fill.fgColor.rgb
+    sl_ground_fill = result_ws["F4"].fill.fgColor.rgb
+
+    assert sl_main_fill == fleet_fill
+    assert sl_main_fill != tf_main_fill
+    assert sl_main_fill != sl_ground_fill
+
+    assert person_position_ws["A1"].value == "2026年6月人员岗位日期明细"
+    assert person_position_ws["B4"].value == "1、3"
+    assert person_position_ws["G4"].value == "1"
+    assert "-" not in person_position_ws["B4"].value
+    assert "\n" not in person_position_ws["B4"].value
