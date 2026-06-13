@@ -50,6 +50,7 @@ except Exception:
 RESULT_POSITIONS = ["SL_MAIN", "SL_AIR", "SL_GROUND", "TF_MAIN", "TF_GROUND", "FLEET_LEAD"]
 RESULT_COL_POS = {3: "SL_MAIN", 4: "SL_AIR", 5: "SL_GROUND", 6: "TF_MAIN", 7: "TF_GROUND", 8: "FLEET_LEAD"}
 WEEKDAY_MAP = {0: "\u5468\u4e00", 1: "\u5468\u4e8c", 2: "\u5468\u4e09", 3: "\u5468\u56db", 4: "\u5468\u4e94", 5: "\u5468\u516d", 6: "\u5468\u65e5"}
+DB_FILENAME = "scheduler.db"
 
 
 def _count_duty_days_by_person(assignments: list[Assignment]) -> dict[int, int]:
@@ -62,6 +63,42 @@ def _count_duty_days_by_person(assignments: list[Assignment]) -> dict[int, int]:
         seen.add(key)
         counts[a.employee_id] += 1
     return dict(counts)
+
+
+def _app_storage_dir() -> Path:
+    return Path.home() / "AppData" / "Local" / "SchedulerApp"
+
+
+def _db_config_path(base_dir: Path | None = None) -> Path:
+    root = base_dir or _app_storage_dir()
+    return root / "app_config.json"
+
+
+def get_configured_db_folder(config_path: Path | None = None, default_dir: Path | None = None) -> Path:
+    config_path = config_path or _db_config_path()
+    default_dir = default_dir or _app_storage_dir()
+    try:
+        if config_path.exists():
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+            configured = str(payload.get("db_folder", "")).strip()
+            if configured:
+                return Path(configured)
+    except Exception:
+        pass
+    return default_dir
+
+
+def save_configured_db_folder(folder: Path, config_path: Path | None = None) -> None:
+    config_path = config_path or _db_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps({"db_folder": str(folder)}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def resolve_db_path(config_path: Path | None = None, default_dir: Path | None = None) -> Path:
+    return get_configured_db_folder(config_path, default_dir) / DB_FILENAME
 
 
 class PeopleTableWidget(QTableWidget):
@@ -240,6 +277,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("\u6392\u73ed\u7cfb\u7edf")
         self.resize(1520, 940)
+        self.db_path = db_path
         self.repo = SchedulerRepository(db_path)
         self.repo.seed_if_empty()
         self.current_account = current_account
@@ -483,6 +521,16 @@ class MainWindow(QMainWindow):
     def _build_db_tab(self):
         layout = QVBoxLayout(self.tab_db)
         layout.addWidget(QLabel("\u6570\u636e\u5e93\u7ba1\u7406\uff1a\u6bcf\u4e2a\u6708\u4efd\u53ea\u5bfc\u5165\u8be5\u6708\u672c\u6708\u6570\u636e\uff0c\u6267\u884c\u4e0b\u4e00\u4e2a\u6708\u6392\u73ed\u65f6\u4f1a\u81ea\u52a8\u8bfb\u53d6\u5b83\u4f5c\u4e3a\u4e0a\u6708\u6570\u636e\u3002"))
+        db_path_row = QHBoxLayout()
+        db_path_row.addWidget(QLabel("当前数据库文件夹"))
+        self.db_folder_label = QLabel(str(self.db_path.parent))
+        self.db_folder_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.db_folder_label.setWordWrap(True)
+        db_path_row.addWidget(self.db_folder_label, 1)
+        self.btn_choose_db_folder = QPushButton("选择数据库文件夹")
+        self.btn_choose_db_folder.clicked.connect(self.choose_db_folder)
+        db_path_row.addWidget(self.btn_choose_db_folder)
+        layout.addLayout(db_path_row)
         self.db_table = QTableWidget(12, 4)
         self.db_table.setHorizontalHeaderLabels(["\u6708\u4efd", "\u72b6\u6001", "\u5bfc\u5165", "\u5220\u9664"])
         self.db_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -813,6 +861,8 @@ class MainWindow(QMainWindow):
     def refresh_db_management(self):
         if not hasattr(self, "db_table"):
             return
+        if hasattr(self, "db_folder_label"):
+            self.db_folder_label.setText(str(self.db_path.parent))
         year = self._month_start().year
         saved_months = self.repo.list_saved_months(f"{year:04d}")
         self.db_table.setRowCount(12)
@@ -833,6 +883,30 @@ class MainWindow(QMainWindow):
             btn_delete.setMinimumHeight(30)
             btn_delete.clicked.connect(lambda _, mk=month_key: self.delete_db_month(mk))
             self.db_table.setCellWidget(row, 3, btn_delete)
+
+    def choose_db_folder(self):
+        current_dir = str(self.db_path.parent)
+        folder = QFileDialog.getExistingDirectory(self, "选择数据库文件夹", current_dir)
+        if not folder:
+            return
+        target_dir = Path(folder)
+        save_configured_db_folder(target_dir)
+        self.db_folder_label.setText(str(target_dir))
+        db_file = target_dir / DB_FILENAME
+        if db_file.exists():
+            detail = (
+                f"已保存新的数据库文件夹：\n{target_dir}\n\n"
+                f"检测到现有数据库文件：{DB_FILENAME}\n"
+                "下次启动程序时会直接使用该数据库。"
+            )
+        else:
+            detail = (
+                f"已保存新的数据库文件夹：\n{target_dir}\n\n"
+                f"该文件夹中目前没有 {DB_FILENAME}。\n"
+                "下次启动程序时会在这里自动创建新数据库。"
+            )
+        detail += "\n\n不会自动复制当前数据库内容，请关闭并重新打开程序后生效。"
+        QMessageBox.information(self, "数据库文件夹已保存", detail)
 
     def _default_tag(self, d: date) -> str:
         if chinese_calendar is not None:
@@ -1653,7 +1727,7 @@ class MainWindow(QMainWindow):
 def run_app() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Scheduler App")
-    db_path = Path.home() / "AppData" / "Local" / "SchedulerApp" / "scheduler.db"
+    db_path = resolve_db_path()
     repo = SchedulerRepository(db_path)
     repo.seed_if_empty()
     login = LoginDialog(repo, "登录排班系统")

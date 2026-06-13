@@ -7,7 +7,7 @@ from openpyxl import Workbook, load_workbook
 from scheduler_app.core.engine import SchedulerEngine
 from scheduler_app.core.models import Assignment, Employee
 from scheduler_app.data.repository import SchedulerRepository
-from scheduler_app.ui.main_window import MainWindow
+from scheduler_app.ui.main_window import MainWindow, get_configured_db_folder, resolve_db_path, save_configured_db_folder
 
 
 def test_repo_seed_has_three_teams():
@@ -24,6 +24,21 @@ def test_default_admin_login_available():
         account = repo.verify_login("admin111", "admin111")
         assert account is not None
         assert account["is_admin"] is True
+
+
+def test_db_folder_config_defaults_and_persists():
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        config_path = base / "app_config.json"
+        default_dir = base / "default_db"
+        chosen_dir = base / "chosen_db"
+
+        assert get_configured_db_folder(config_path, default_dir) == default_dir
+
+        save_configured_db_folder(chosen_dir, config_path)
+
+        assert get_configured_db_folder(config_path, default_dir) == chosen_dir
+        assert resolve_db_path(config_path, default_dir) == chosen_dir / "scheduler.db"
 
 
 def test_cannot_remove_last_admin():
